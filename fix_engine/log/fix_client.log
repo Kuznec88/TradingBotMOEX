@@ -1,0 +1,390 @@
+2026-03-17 23:22:53,654 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:22:53,664 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:22:53,666 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:22:53,667 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:22:53,690 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:22:53,707 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:22:55,619 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:22:56,077 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:22:56.10819567956=MU905720000198=0108=30141=Y10=020
+2026-03-17 23:22:56,077 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:22:56,077 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:22:58,096 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:22:59,877 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:03,873 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:05,677 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:08,662 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:10,453 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:13,426 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:15,173 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:18,143 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:19,935 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:23,873 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:25,668 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:28,617 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:30,417 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:33,358 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:35,154 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:38,086 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:39,882 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:43,779 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:45,572 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:48,484 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:50,278 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:53,182 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:23:54,976 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:23:58,826 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:00,619 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:03,507 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:04,971 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:24:05,317 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:08,192 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:10,011 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:13,831 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:15,636 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:18,476 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:20,274 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:23,110 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:24:24,916 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:24:28,675 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:25:35,789 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:25:35,799 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:25:35,800 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:25:35,801 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:25:35,817 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:25:35,893 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:25:37,685 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:25:37,741 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:25:37.81958125256=MU905720000198=0108=30141=Y10=017
+2026-03-17 23:25:37,742 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:25:37,742 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:25:39,623 | ERROR | fix_engine | Failed to send market order: NewOrderSingle.__init__() takes 1 positional argument but 7 were given
+Traceback (most recent call last):
+  File "/mnt/c/Users/Admin/Python Projects/TradingBotMOEX/fix_engine/main.py", line 284, in run
+    cl_ord_id = engine.send_order(symbol, side, float(qty), price=None)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/Admin/Python Projects/TradingBotMOEX/fix_engine/execution_engine.py", line 35, in send_order
+    message = self._build_new_order(order)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/Admin/Python Projects/TradingBotMOEX/fix_engine/execution_engine.py", line 64, in _build_new_order
+    message = fix44.NewOrderSingle(
+              ^^^^^^^^^^^^^^^^^^^^^
+TypeError: NewOrderSingle.__init__() takes 1 positional argument but 7 were given
+2026-03-17 23:25:40,747 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:27:20,415 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:27:20,425 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:27:20,427 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:27:20,427 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:27:20,444 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:27:20,461 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:27:22,252 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:27:22,420 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:27:22.44657707656=MU905720000198=0108=30141=Y10=018
+2026-03-17 23:27:22,421 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:27:22,421 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:27:23,796 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=15635=D34=249=MU905720000152=20260317-20:27:23.79656=IFIX-EQ-UAT11=MOEX-20260317202723794413-00000121=138=140=154=155=SBER59=060=20260317-20:27:2310=050
+2026-03-17 23:27:23,799 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:27:23,799 | INFO | fix_engine | [STATE] order_id=MOEX-20260317202723794413-000001 NEW -> PENDING_NEW
+2026-03-17 23:27:23,800 | INFO | fix_engine | Market order queued, ClOrdID=MOEX-20260317202723794413-000001
+2026-03-17 23:27:25,840 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:27:27,639 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:29:48,184 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:29:48,194 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:29:48,196 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:29:48,196 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:29:48,213 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:48,230 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:48,935 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,936 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,938 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,939 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,939 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,940 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,941 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,942 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,942 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,944 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,945 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,946 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,949 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,951 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,952 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:48,954 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:29:50,004 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:29:50,171 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:29:50.31048123556=MU905720000198=0108=30141=Y10=002
+2026-03-17 23:29:50,171 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:29:50,172 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:29:54,854 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:29:54,878 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:29:54,879 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:29:54,880 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:29:54,895 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:54,910 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:54,930 | WARNING | fix_engine | [TRADE] Logout
+2026-03-17 23:29:56,748 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:29:59,753 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:59,772 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:29:59,782 | WARNING | fix_engine | [TRADE] Logout
+2026-03-17 23:30:01,632 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:30:03,128 | WARNING | fix_engine | Bad command format.
+2026-03-17 23:30:04,631 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:30:04,651 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:30:04,660 | WARNING | fix_engine | [TRADE] Logout
+2026-03-17 23:30:06,472 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:32:34,325 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:32:34,335 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:32:34,336 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:32:34,337 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:32:34,352 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:32:34,369 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:32:36,150 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:32:36,664 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:32:36.75340089656=MU905720000198=0108=30141=Y10=015
+2026-03-17 23:32:36,664 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:32:36,664 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:32:37,661 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=15635=D34=249=MU905720000152=20260317-20:32:37.66156=IFIX-EQ-UAT11=MOEX-20260317203237659853-00000121=138=140=154=155=SBER59=060=20260317-20:32:3710=052
+2026-03-17 23:32:37,663 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:32:37,663 | INFO | fix_engine | [STATE] order_id=MOEX-20260317203237659853-000001 NEW -> PENDING_NEW
+2026-03-17 23:32:37,663 | INFO | fix_engine | Market order queued, ClOrdID=MOEX-20260317203237659853-000001
+2026-03-17 23:32:37,670 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:32:37,670 | INFO | fix_engine | [STATE] order_id=MOEX-20260317203237659853-000001 PENDING_NEW -> REJECTED
+2026-03-17 23:32:39,675 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:33:44,401 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:33:44,411 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:33:44,412 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:33:44,412 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:33:44,427 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:33:44,445 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:33:46,231 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:33:46,349 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:33:46.36505713556=MU905720000198=0108=30141=Y10=010
+2026-03-17 23:33:46,350 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:33:46,350 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:33:48,581 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=15635=D34=249=MU905720000152=20260317-20:33:48.58156=IFIX-EQ-UAT11=MOEX-20260317203348581320-00000121=138=140=154=155=SBER59=060=20260317-20:33:4810=045
+2026-03-17 23:33:48,584 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:33:48,584 | INFO | fix_engine | [STATE] order_id=MOEX-20260317203348581320-000001 NEW -> PENDING_NEW
+2026-03-17 23:33:48,584 | INFO | fix_engine | Market order queued, ClOrdID=MOEX-20260317203348581320-000001
+2026-03-17 23:33:48,591 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:33:48,591 | INFO | fix_engine | [STATE] order_id=MOEX-20260317203348581320-000001 PENDING_NEW -> REJECTED
+2026-03-17 23:33:48,591 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=MOEX-20260317203348581320-000001 exec_id=MOEX-20260317203348581320-000001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=11 text=ClOrdID is too long
+2026-03-17 23:33:49,604 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:34:36,422 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:34:36,432 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:34:36,433 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:34:36,434 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:34:36,449 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:34:36,467 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:34:38,245 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:34:38,408 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:34:38.49833969056=MU905720000198=0108=30141=Y10=028
+2026-03-17 23:34:38,409 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:34:38,409 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:34:39,697 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=14135=D34=249=MU905720000152=20260317-20:34:39.69756=IFIX-EQ-UAT11=M260317203439000121=138=140=154=155=SBER59=060=20260317-20:34:3910=247
+2026-03-17 23:34:39,699 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:34:39,699 | INFO | fix_engine | [STATE] order_id=M2603172034390001 NEW -> PENDING_NEW
+2026-03-17 23:34:39,699 | INFO | fix_engine | Market order queued, ClOrdID=M2603172034390001
+2026-03-17 23:34:39,722 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:34:39,723 | INFO | fix_engine | [STATE] order_id=M2603172034390001 PENDING_NEW -> REJECTED
+2026-03-17 23:34:39,723 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=M2603172034390001 exec_id=M2603172034390001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=99 text=TradingSessions group should contain only one element
+2026-03-17 23:34:41,726 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:35:29,523 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:35:29,533 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:35:29,534 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:35:29,535 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:35:29,550 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:35:29,567 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:35:31,353 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:35:31,514 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:35:31.54577097056=MU905720000198=0108=30141=Y10=015
+2026-03-17 23:35:31,514 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:35:31,514 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:35:32,551 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=15635=D34=249=MU905720000152=20260317-20:35:32.55156=IFIX-EQ-UAT11=M260317203532000121=138=140=154=155=SBER59=060=20260317-20:35:32386=1336=TQBR10=003
+2026-03-17 23:35:32,553 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:35:32,553 | INFO | fix_engine | [STATE] order_id=M2603172035320001 NEW -> PENDING_NEW
+2026-03-17 23:35:32,553 | INFO | fix_engine | Market order queued, ClOrdID=M2603172035320001
+2026-03-17 23:35:32,565 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:35:32,565 | INFO | fix_engine | [STATE] order_id=M2603172035320001 PENDING_NEW -> REJECTED
+2026-03-17 23:35:32,565 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=M2603172035320001 exec_id=M2603172035320001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=15 text=ERROR: (145) Invalid trading account
+2026-03-17 23:35:34,568 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:36:34,403 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:36:34,412 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:37:53,515 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:37:53,525 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:37:53,528 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:37:53,528 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:37:53,545 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:37:53,562 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:37:55,336 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:37:55,480 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:37:55.54431551956=MU905720000198=0108=30141=Y10=016
+2026-03-17 23:37:55,480 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:37:55,480 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:37:56,692 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=17135=D34=249=MU905720000152=20260317-20:37:56.69256=IFIX-EQ-UAT1=MU905720000111=M260317203756000121=138=140=154=155=SBER59=060=20260317-20:37:56386=1336=TQBR10=039
+2026-03-17 23:37:56,694 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:37:56,695 | INFO | fix_engine | [STATE] order_id=M2603172037560001 NEW -> PENDING_NEW
+2026-03-17 23:37:56,695 | INFO | fix_engine | Market order queued, ClOrdID=M2603172037560001
+2026-03-17 23:37:56,705 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:37:56,705 | INFO | fix_engine | [STATE] order_id=M2603172037560001 PENDING_NEW -> REJECTED
+2026-03-17 23:37:56,705 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=M2603172037560001 exec_id=M2603172037560001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=15 text=ERROR: (145) Invalid trading account
+2026-03-17 23:37:58,708 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:38:49,897 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-17 23:38:49,906 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:38:49,909 | WARNING | fix_engine | TradingAccount is currently set to SenderCompID value (MU9057200001). MOEX usually requires a separate valid trading account/portfolio code.
+2026-03-17 23:38:49,910 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-17 23:38:49,911 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-17 23:38:49,927 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-17 23:38:49,944 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:38:51,734 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:38:51,848 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260317-20:38:51.93943511756=MU905720000198=0108=30141=Y10=018
+2026-03-17 23:38:51,849 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-17 23:38:51,849 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-17 23:38:53,375 | ERROR | fix_engine | Failed to send market order: could not convert string to float: '1ъ'
+Traceback (most recent call last):
+  File "/mnt/c/Users/Admin/Python Projects/TradingBotMOEX/fix_engine/main.py", line 347, in run
+    cl_ord_id = engine.send_order(symbol, side, float(qty), price=None)
+                                                ^^^^^^^^^^
+ValueError: could not convert string to float: '1ъ'
+2026-03-17 23:38:54,848 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:38:56,640 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-17 23:38:58,682 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=17135=D34=249=MU905720000152=20260317-20:38:58.68256=IFIX-EQ-UAT1=MU905720000111=M260317203858000121=138=140=154=155=SBER59=060=20260317-20:38:58386=1336=TQBR10=047
+2026-03-17 23:38:58,684 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-17 23:38:58,684 | INFO | fix_engine | [STATE] order_id=M2603172038580001 NEW -> PENDING_NEW
+2026-03-17 23:38:58,684 | INFO | fix_engine | Market order queued, ClOrdID=M2603172038580001
+2026-03-17 23:38:58,708 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-17 23:38:58,708 | INFO | fix_engine | [STATE] order_id=M2603172038580001 PENDING_NEW -> REJECTED
+2026-03-17 23:38:58,708 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=M2603172038580001 exec_id=M2603172038580001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=15 text=ERROR: (145) Invalid trading account
+2026-03-17 23:38:59,736 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-17 23:39:01,535 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-18 16:17:15,485 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-18 16:17:15,506 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-18 16:17:15,509 | WARNING | fix_engine | TradingAccount is currently set to SenderCompID value (MU9057200001). MOEX usually requires a separate valid trading account/portfolio code.
+2026-03-18 16:17:15,511 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-18 16:17:15,511 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-18 16:17:15,533 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-18 16:17:15,550 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-18 16:17:17,386 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-18 16:17:17,841 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260318-13:17:17.81662337856=MU905720000198=0108=30141=Y10=022
+2026-03-18 16:17:17,841 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-18 16:17:17,842 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-18 16:19:16,680 | INFO | fix_engine | [DROP_COPY] Session created: FIX.4.4:MU9057200001->IFIX-DC-EQ-UAT:DROP_COPY
+2026-03-18 16:19:16,691 | INFO | fix_engine | [TRADE] Session created: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-18 16:19:16,694 | WARNING | fix_engine | TradingAccount is currently set to SenderCompID value (MU9057200001). MOEX usually requires a separate valid trading account/portfolio code.
+2026-03-18 16:19:16,695 | INFO | fix_engine | FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.
+2026-03-18 16:19:16,695 | INFO | fix_engine | Commands:
+  m SYMBOL SIDE QTY
+  l SYMBOL SIDE QTY PRICE
+  c CL_ORD_ID
+  sig LAST_PRICE SYMBOL QTY
+  md SYMBOL BID ASK LAST VOLUME [QTY]
+  pos SYMBOL
+  open
+  q
+2026-03-18 16:19:16,712 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-18 16:19:16,729 | INFO | fix_engine | [TRADE][ADMIN] Logon tags set: 554,141
+2026-03-18 16:19:18,513 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-18 16:19:18,711 | INFO | fix_engine | [TRADE][fromAdmin A] 8=FIX.4.49=9035=A34=149=IFIX-EQ-UAT52=20260318-13:19:19.90349332456=MU905720000198=0108=30141=Y10=019
+2026-03-18 16:19:18,711 | INFO | fix_engine | [TRADE] session bound: FIX.4.4:MU9057200001->IFIX-EQ-UAT:TRADE
+2026-03-18 16:19:18,712 | INFO | fix_engine | [TRADE] Logon successful
+2026-03-18 16:19:21,727 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-18 16:19:23,627 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-18 16:19:26,616 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-18 16:19:29,491 | WARNING | fix_engine | [DROP_COPY] Logout
+2026-03-18 16:19:30,759 | INFO | fix_engine | [TRADE][toApp D] 8=FIX.4.49=17135=D34=249=MU905720000152=20260318-13:19:30.75956=IFIX-EQ-UAT1=MU905720000111=M260318131930000121=138=140=154=155=SBER59=060=20260318-13:19:30386=1336=TQBR10=028
+2026-03-18 16:19:30,762 | INFO | fix_engine | [ORDER] 1 SBER qty=1.0 price=None
+2026-03-18 16:19:30,763 | INFO | fix_engine | [STATE] order_id=M2603181319300001 NEW -> PENDING_NEW
+2026-03-18 16:19:30,763 | INFO | fix_engine | Market order queued, ClOrdID=M2603181319300001
+2026-03-18 16:19:30,772 | INFO | fix_engine | [FILL][TRADE] symbol=SBER filled=0.0000 avg_price=0
+2026-03-18 16:19:30,773 | INFO | fix_engine | [STATE] order_id=M2603181319300001 PENDING_NEW -> REJECTED
+2026-03-18 16:19:30,773 | ERROR | fix_engine | [REJECT][TRADE] cl_ord_id=M2603181319300001 exec_id=M2603181319300001|8|NONE ord_status=8 exec_type=8 ord_rej_reason=15 text=ERROR: (145) Invalid trading account
+2026-03-18 16:19:30,774 | ERROR | fix_engine | [REJECT][TRADE][REQUEST_RAW] 8=FIX.4.4|9=110|35=D|1=MU9057200001|11=M2603181319300001|21=1|38=1|40=1|54=1|55=SBER|59=0|60=20260318-13:19:30|386=1|336=TQBR|10=102|
+2026-03-18 16:19:30,774 | ERROR | fix_engine | [REJECT][TRADE][RESPONSE_RAW] 8=FIX.4.4|9=320|35=8|34=2|49=IFIX-EQ-UAT|52=20260318-13:19:30.785541291|56=MU9057200001|1=MU9057200001|6=0|11=M2603181319300001|14=0|17=M2603181319300001|8|NONE|37=NONE|38=1|39=8|40=1|54=1|55=SBER|58=ERROR: (145) Invalid trading account|59=0|60=20260318-13:19:30|103=15|150=8|151=0|336=TQBR|5979=20260318-13:19:30.783287678|9412=784413|10=172|
+2026-03-18 16:19:31,778 | INFO | fix_engine | [DROP_COPY][ADMIN] Logon tags set: 554,141
+2026-03-18 16:19:33,560 | WARNING | fix_engine | [DROP_COPY] Logout

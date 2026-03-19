@@ -19,10 +19,16 @@ class ExecutionEngine:
         order_manager: OrderManager,
         get_trade_session_id: Callable[[], fix.SessionID],
         logger: logging.Logger,
+        trading_session_id: str = "TQBR",
+        trading_session_sub_id: str | None = None,
+        trading_account: str | None = None,
     ) -> None:
         self.order_manager = order_manager
         self.get_trade_session_id = get_trade_session_id
         self.logger = logger
+        self.trading_session_id = trading_session_id
+        self.trading_session_sub_id = trading_session_sub_id
+        self.trading_account = trading_account
 
     def send_order(
         self,
@@ -33,6 +39,7 @@ class ExecutionEngine:
     ) -> str:
         order = self.order_manager.create_order(symbol, side, qty, price)
         message = self._build_new_order(order)
+        self.order_manager.remember_outbound_message(order.cl_ord_id, message.toString())
         self._send(message)
 
         old, new = self.order_manager.set_status(order.cl_ord_id, "PENDING_NEW")
@@ -46,13 +53,12 @@ class ExecutionEngine:
             raise ValueError(f"Order not found: {cl_ord_id}")
 
         cancel_id = self.order_manager.next_cl_ord_id()
-        message = fix44.OrderCancelRequest(
-            fix.OrigClOrdID(order.cl_ord_id),
-            fix.ClOrdID(cancel_id),
-            fix.Symbol(order.symbol),
-            fix.Side(order.side),
-            fix.TransactTime(),
-        )
+        message = fix44.OrderCancelRequest()
+        message.setField(fix.OrigClOrdID(order.cl_ord_id))
+        message.setField(fix.ClOrdID(cancel_id))
+        message.setField(fix.Symbol(order.symbol))
+        message.setField(fix.Side(order.side))
+        message.setField(fix.TransactTime())
         message.setField(fix.OrderQty(order.qty))
         self._send(message)
 
@@ -61,18 +67,26 @@ class ExecutionEngine:
 
     def _build_new_order(self, order: ManagedOrder) -> fix44.NewOrderSingle:
         ord_type = fix.OrdType_LIMIT if order.price is not None else fix.OrdType_MARKET
-        message = fix44.NewOrderSingle(
-            fix.ClOrdID(order.cl_ord_id),
-            fix.HandlInst("1"),
-            fix.Symbol(order.symbol),
-            fix.Side(order.side),
-            fix.TransactTime(),
-            fix.OrdType(ord_type),
-        )
+        message = fix44.NewOrderSingle()
+        message.setField(fix.ClOrdID(order.cl_ord_id))
+        message.setField(fix.HandlInst("1"))
+        message.setField(fix.Symbol(order.symbol))
+        message.setField(fix.Side(order.side))
+        message.setField(fix.TransactTime())
+        message.setField(fix.OrdType(ord_type))
         message.setField(fix.OrderQty(order.qty))
         if order.price is not None:
             message.setField(fix.Price(order.price))
         message.setField(fix.TimeInForce(fix.TimeInForce_DAY))
+        if self.trading_account:
+            message.setField(fix.Account(self.trading_account))
+
+        # MOEX UAT expects TradingSessions group with exactly one element.
+        ts_group = fix.Group(386, 336)
+        ts_group.setField(fix.TradingSessionID(self.trading_session_id))
+        if self.trading_session_sub_id:
+            ts_group.setField(fix.TradingSessionSubID(self.trading_session_sub_id))
+        message.addGroup(ts_group)
         return message
 
     def _send(self, message: fix.Message) -> None:

@@ -1,0 +1,75 @@
+20260317-20:22:53.664591000 : Created session
+20260317-20:22:53.666459000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:22:53.716403000 : Initiated logon request
+20260317-20:22:56.076977000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:22:56.077501000 : Received logon response
+20260317-20:25:35.799362000 : Created session
+20260317-20:25:35.800980000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:25:35.826529000 : Initiated logon request
+20260317-20:25:37.741658000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:25:37.742248000 : Received logon response
+20260317-20:27:20.425557000 : Created session
+20260317-20:27:20.427433000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:27:20.470672000 : Initiated logon request
+20260317-20:27:22.420117000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:27:22.420756000 : Received logon response
+20260317-20:27:23.807673000 : Message 2 Rejected: Invalid tag number:5979
+20260317-20:29:48.194690000 : Created session
+20260317-20:29:48.196402000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:29:48.240426000 : Initiated logon request
+20260317-20:29:50.171163000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:29:50.171641000 : Received logon response
+20260317-20:29:54.878320000 : Created session
+20260317-20:29:54.879804000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:29:54.920794000 : Initiated logon request
+20260317-20:29:54.930193000 : Socket Error: Connection reset by peer.
+20260317-20:29:54.930395000 : Disconnecting
+20260317-20:29:59.733763000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:29:59.763142000 : Initiated logon request
+20260317-20:29:59.782437000 : Socket Error: Connection reset by peer.
+20260317-20:29:59.782554000 : Disconnecting
+20260317-20:30:04.612324000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:30:04.641268000 : Initiated logon request
+20260317-20:30:04.660497000 : Socket Error: Connection reset by peer.
+20260317-20:30:04.660615000 : Disconnecting
+20260317-20:32:34.335390000 : Created session
+20260317-20:32:34.336868000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:32:34.379227000 : Initiated logon request
+20260317-20:32:36.663917000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:32:36.664407000 : Received logon response
+20260317-20:33:44.411250000 : Created session
+20260317-20:33:44.412531000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:33:44.437702000 : Initiated logon request
+20260317-20:33:46.349762000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:33:46.350261000 : Received logon response
+20260317-20:34:36.432503000 : Created session
+20260317-20:34:36.434161000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:34:36.477005000 : Initiated logon request
+20260317-20:34:38.408454000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:34:38.408961000 : Received logon response
+20260317-20:35:29.533450000 : Created session
+20260317-20:35:29.534797000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:35:29.577629000 : Initiated logon request
+20260317-20:35:31.513739000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:35:31.514256000 : Received logon response
+20260317-20:36:34.412728000 : Created session
+20260317-20:37:53.525422000 : Created session
+20260317-20:37:53.528290000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:37:53.571853000 : Initiated logon request
+20260317-20:37:55.479870000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:37:55.480361000 : Received logon response
+20260317-20:38:49.907217000 : Created session
+20260317-20:38:49.911240000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260317-20:38:49.937210000 : Initiated logon request
+20260317-20:38:51.848218000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260317-20:38:51.848733000 : Received logon response
+20260318-13:17:15.506805000 : Created session
+20260318-13:17:15.511387000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260318-13:17:15.542976000 : Initiated logon request
+20260318-13:17:17.841089000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260318-13:17:17.841625000 : Received logon response
+20260318-13:19:16.691468000 : Created session
+20260318-13:19:16.695969000 : Connecting to 91.208.232.200 on port 9130 (Source :0)
+20260318-13:19:16.738270000 : Initiated logon request
+20260318-13:19:18.711102000 : Logon contains ResetSeqNumFlag=Y, reseting sequence numbers to 1
+20260318-13:19:18.711562000 : Received logon response

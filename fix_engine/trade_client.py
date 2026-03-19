@@ -6,6 +6,8 @@ from typing import Callable
 import quickfix as fix
 
 from dropcopy_client import DropCopyClient
+from forts_client import FortsClient
+from order_models import MarketType
 from order_manager import OrderManager
 
 
@@ -34,22 +36,25 @@ class MoexFixApplication(fix.Application):
 
     def __init__(
         self,
-        password: str,
+        password_by_target: dict[str, str],
         logger: logging.Logger,
         order_manager: OrderManager,
         on_execution_report: Callable[[fix.Message, str], None],
         on_market_data: Callable[[fix.Message, str], None] | None = None,
     ) -> None:
         super().__init__()
-        self.password = password
+        self.password_by_target = password_by_target
         self.logger = logger
         self.order_manager = order_manager
         self.trade_client = TradeClient(logger)
         self.dropcopy_client = DropCopyClient(logger)
+        self.forts_client = FortsClient(logger)
         self.on_execution_report = on_execution_report
         self.on_market_data = on_market_data
         self._logged_on_trade = False
         self._logged_on_dropcopy = False
+        self._logged_on_forts = False
+        self._last_admin_logout: dict[str, dict[str, str]] = {}
 
     def onCreate(self, session_id: fix.SessionID) -> None:
         role = self._session_role(session_id)
@@ -60,6 +65,9 @@ class MoexFixApplication(fix.Application):
         if role == "TRADE":
             self.trade_client.bind_session(session_id)
             self._logged_on_trade = True
+        elif role == "FORTS":
+            self.forts_client.bind_session(session_id)
+            self._logged_on_forts = True
         else:
             self.dropcopy_client.bind_session(session_id)
             self._logged_on_dropcopy = True
@@ -69,17 +77,34 @@ class MoexFixApplication(fix.Application):
         role = self._session_role(session_id)
         if role == "TRADE":
             self._logged_on_trade = False
+        elif role == "FORTS":
+            self._logged_on_forts = False
         else:
             self._logged_on_dropcopy = False
-        self.logger.warning("[%s] Logout", role)
+        details = self._last_admin_logout.get(role)
+        if details:
+            self.logger.warning(
+                "[%s] Logout. Text=%s SessionRejectReason=%s RefTagID=%s RefMsgType=%s RefSeqNum=%s",
+                role,
+                details.get("58", ""),
+                details.get("373", ""),
+                details.get("371", ""),
+                details.get("372", ""),
+                details.get("45", ""),
+            )
+        else:
+            self.logger.warning("[%s] Logout", role)
 
     def toAdmin(self, message: fix.Message, session_id: fix.SessionID) -> None:
         msg_type = self._msg_type(message)
         role = self._session_role(session_id)
         if msg_type == fix.MsgType_Logon:
-            message.setField(fix.Password(self.password))
+            target = session_id.getTargetCompID().getValue()
+            password = self.password_by_target.get(target, "").strip()
+            if password:
+                message.setField(fix.Password(password))
             message.setField(fix.ResetSeqNumFlag(True))
-            self.logger.info("[%s][ADMIN] Logon tags set: 554,141", role)
+            self.logger.info("[%s][ADMIN] Logon tags set: %s141", role, "554," if password else "")
         else:
             self.logger.debug("[%s][toAdmin %s] %s", role, msg_type, message.toString())
 
@@ -87,10 +112,27 @@ class MoexFixApplication(fix.Application):
         role = self._session_role(session_id)
         msg_type = self._msg_type(message)
         if msg_type == fix.MsgType_Reject:
-            self.logger.error("[%s][ADMIN REJECT] %s", role, self._message_to_dict(message))
+            details = self._message_to_dict(message)
+            self.logger.error(
+                "[%s][ADMIN REJECT] Text=%s SessionRejectReason=%s RefTagID=%s RefMsgType=%s RefSeqNum=%s Raw=%s",
+                role,
+                details.get("58", ""),
+                details.get("373", ""),
+                details.get("371", ""),
+                details.get("372", ""),
+                details.get("45", ""),
+                details,
+            )
             return
         if msg_type == fix.MsgType_Logout:
-            self.logger.warning("[%s][ADMIN LOGOUT] %s", role, self._message_to_dict(message))
+            details = self._message_to_dict(message)
+            self._last_admin_logout[role] = details
+            self.logger.warning(
+                "[%s][ADMIN LOGOUT] Text=%s Raw=%s",
+                role,
+                details.get("58", ""),
+                details,
+            )
             return
         if msg_type == fix.MsgType_TestRequest:
             self.logger.warning("[%s][ADMIN TEST] %s", role, self._message_to_dict(message))
@@ -126,7 +168,15 @@ class MoexFixApplication(fix.Application):
     def is_trade_ready(self) -> bool:
         return self._logged_on_trade and self.trade_client.session_id is not None
 
-    def get_trade_session_id(self) -> fix.SessionID:
+    def is_forts_ready(self) -> bool:
+        return self._logged_on_forts and self.forts_client.session_id is not None
+
+    def get_session_id(self, market: MarketType) -> fix.SessionID:
+        if market == MarketType.FORTS:
+            if not self.is_forts_ready():
+                raise RuntimeError("FORTS session is not logged on.")
+            return self.forts_client.session_id  # type: ignore[return-value]
+
         if not self.is_trade_ready():
             raise RuntimeError("TRADE session is not logged on.")
         return self.trade_client.session_id  # type: ignore[return-value]
@@ -134,6 +184,8 @@ class MoexFixApplication(fix.Application):
     def _session_role(self, session_id: fix.SessionID) -> str:
         if self.trade_client.is_trade_session(session_id):
             return "TRADE"
+        if self.forts_client.is_forts_session(session_id):
+            return "FORTS"
         if self.dropcopy_client.is_dropcopy_session(session_id):
             return "DROP_COPY"
         return "UNKNOWN"

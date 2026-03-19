@@ -18,6 +18,7 @@ class ManagedOrder:
     status: str
     filled_qty: float
     remaining_qty: float
+    created_at: datetime
 
 
 class OrderManager:
@@ -28,12 +29,15 @@ class OrderManager:
         self._counter = 0
         self._orders: Dict[str, ManagedOrder] = {}
         self._positions: Dict[str, float] = {}
+        self._outbound_messages: Dict[str, str] = {}
 
     def next_cl_ord_id(self) -> str:
         with self._lock:
             self._counter += 1
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
-            return f"MOEX-{ts}-{self._counter:06d}"
+            # MOEX UAT rejects oversized ClOrdID; keep it short and deterministic.
+            # Format length: 1 + 12 + 4 = 17 chars (e.g., M2603172033480001).
+            ts = datetime.now(timezone.utc).strftime("%y%m%d%H%M%S")
+            return f"M{ts}{self._counter % 10000:04d}"
 
     def create_order(
         self,
@@ -57,6 +61,7 @@ class OrderManager:
                 status="NEW",
                 filled_qty=0.0,
                 remaining_qty=float(qty),
+                created_at=datetime.now(timezone.utc),
             )
             self._orders[cl_ord_id] = order
             return order
@@ -81,6 +86,7 @@ class OrderManager:
                     status="NEW",
                     filled_qty=0.0,
                     remaining_qty=qty,
+                    created_at=datetime.now(timezone.utc),
                 )
                 self._orders[cl_ord_id] = order
 
@@ -103,13 +109,29 @@ class OrderManager:
                 "cl_ord_id": order.cl_ord_id,
                 "symbol": order.symbol,
                 "side": order.side,
+                "account": self._safe_get(message, 1),
+                "exec_type": exec_type,
+                "ord_status": ord_status,
                 "status_old": old_status,
                 "status_new": order.status,
                 "filled_qty": f"{order.filled_qty:.4f}",
                 "remaining_qty": f"{order.remaining_qty:.4f}",
                 "last_qty": f"{last_qty:.4f}",
+                "last_px": self._safe_get(message, 31),
                 "avg_px": self._safe_get(message, 6),
+                "ord_rej_reason": self._safe_get(message, 103),
+                "text": self._safe_get(message, 58),
+                "exec_id": self._safe_get(message, 17),
+                "raw_inbound_fix": message.toString(),
             }
+
+    def remember_outbound_message(self, cl_ord_id: str, raw_fix: str) -> None:
+        with self._lock:
+            self._outbound_messages[cl_ord_id] = raw_fix
+
+    def get_outbound_message(self, cl_ord_id: str) -> str:
+        with self._lock:
+            return self._outbound_messages.get(cl_ord_id, "")
 
     def set_status(self, cl_ord_id: str, new_status: str) -> tuple[str, str]:
         with self._lock:
