@@ -197,6 +197,69 @@ class ExecutionGateway:
             return
         self._simulate_match_pending_orders(data)
 
+    def simulation_config_snapshot(self) -> dict[str, float | int]:
+        return {
+            "simulation_slippage_bps": float(self.simulation_slippage_bps),
+            "simulation_slippage_max_bps": float(self.simulation_slippage_max_bps),
+            "simulation_volatility_slippage_multiplier": float(self.simulation_volatility_slippage_multiplier),
+            "simulation_latency_network_ms": int(self.simulation_latency_network_ms),
+            "simulation_latency_exchange_ms": int(self.simulation_latency_exchange_ms),
+            "simulation_latency_jitter_ms": int(self.simulation_latency_jitter_ms),
+            "simulation_fill_participation": float(self.simulation_fill_participation),
+            "simulation_touch_fill_probability": float(self.simulation_touch_fill_probability),
+            "simulation_passive_fill_probability_scale": float(self.simulation_passive_fill_probability_scale),
+            "simulation_adverse_selection_bias": float(self.simulation_adverse_selection_bias),
+        }
+
+    def apply_simulation_config(
+        self,
+        *,
+        simulation_slippage_bps: float,
+        simulation_slippage_max_bps: float,
+        simulation_volatility_slippage_multiplier: float,
+        simulation_latency_network_ms: int,
+        simulation_latency_exchange_ms: int,
+        simulation_latency_jitter_ms: int,
+        simulation_fill_participation: float,
+        simulation_touch_fill_probability: float,
+        simulation_passive_fill_probability_scale: float,
+        simulation_adverse_selection_bias: float,
+        profile_name: str = "",
+        source: str = "runtime",
+    ) -> None:
+        with self._lock:
+            self.simulation_slippage_bps = max(0.0, float(simulation_slippage_bps))
+            self.simulation_slippage_max_bps = max(self.simulation_slippage_bps, float(simulation_slippage_max_bps))
+            self.simulation_volatility_slippage_multiplier = max(0.0, float(simulation_volatility_slippage_multiplier))
+            self.simulation_latency_network_ms = max(0, int(simulation_latency_network_ms))
+            self.simulation_latency_exchange_ms = max(0, int(simulation_latency_exchange_ms))
+            self.simulation_latency_jitter_ms = max(0, int(simulation_latency_jitter_ms))
+            self.simulation_fill_participation = max(0.01, float(simulation_fill_participation))
+            self.simulation_touch_fill_probability = max(0.0, min(1.0, float(simulation_touch_fill_probability)))
+            self.simulation_passive_fill_probability_scale = max(
+                0.0, min(1.0, float(simulation_passive_fill_probability_scale))
+            )
+            self.simulation_adverse_selection_bias = max(0.0, min(1.0, float(simulation_adverse_selection_bias)))
+
+        cfg = self.simulation_config_snapshot()
+        self.logger.info(
+            "[SIM][PROFILE] applied profile=%s source=%s slippage_bps=%s slippage_max_bps=%s vol_slippage_mult=%s "
+            "latency_network_ms=%s latency_exchange_ms=%s latency_jitter_ms=%s fill_participation=%s "
+            "touch_fill_probability=%s passive_fill_scale=%s adverse_selection_bias=%s",
+            profile_name or "CUSTOM",
+            source,
+            cfg["simulation_slippage_bps"],
+            cfg["simulation_slippage_max_bps"],
+            cfg["simulation_volatility_slippage_multiplier"],
+            cfg["simulation_latency_network_ms"],
+            cfg["simulation_latency_exchange_ms"],
+            cfg["simulation_latency_jitter_ms"],
+            cfg["simulation_fill_participation"],
+            cfg["simulation_touch_fill_probability"],
+            cfg["simulation_passive_fill_probability_scale"],
+            cfg["simulation_adverse_selection_bias"],
+        )
+
     def set_trading_enabled(self, enabled: bool, reason: str = "") -> None:
         self._trading_enabled = bool(enabled)
         self.logger.warning(

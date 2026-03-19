@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import sqlite3
 import sys
 import time
 import types
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
@@ -116,6 +117,7 @@ from order_manager import ManagedOrder, OrderManager
 from order_models import MarketType, OrderRequest
 from position_manager import PositionManager
 from risk_manager import RiskManager
+from simulation_profiles import resolve_simulation_profile
 from unit_economics import UnitEconomicsCalculator
 
 
@@ -143,6 +145,7 @@ class E2EConfig:
     base_price: float = 250.0
     base_spread: float = 0.04
     lot_size: float = 1.0
+    simulation_profile: str = "STRESS"
     simulation_slippage_bps: float = 3.0
     simulation_slippage_max_bps: float = 30.0
     simulation_volatility_slippage_multiplier: float = 2.0
@@ -169,13 +172,39 @@ class E2EConfig:
     mm_replace_threshold_ticks: int = 2
     mm_replace_cancel_threshold_ticks: float = 2.0
     mm_replace_keep_threshold_ticks: float = 1.0
+    mm_replace_persist_ms: int = 220
     mm_adverse_move_cancel_ticks: int = 3
     mm_fast_cancel_keep_ticks: float = 1.5
     mm_fast_cancel_persist_ms: int = 180
     mm_price_tolerance_ticks: float = 0.0
     mm_price_tolerance_pct: float = 0.0
-    mm_min_order_lifetime_ms: int = 150
+    mm_min_order_lifetime_ms: int = 200
     mm_cancel_replace_cooldown_ms: int = 120
+    mm_entry_min_spread: float = 0.0
+    mm_entry_stability_window_ticks: int = 8
+    mm_entry_max_bid_ask_move_ticks: float = 2.0
+    mm_entry_anti_trend_threshold: float = 0.0
+    mm_entry_direction_window_ticks: int = 12
+    mm_entry_direction_min_move_ticks: float = 1.0
+    mm_trade_cooldown_ms: int = 300
+    mm_entry_min_place_interval_ms: int = 200
+    mm_entry_score_threshold: float = 0.6
+    mm_entry_score_spread_threshold: float = 0.02
+    mm_entry_score_w_spread: float = 0.35
+    mm_entry_score_w_stability: float = 0.25
+    mm_entry_score_w_trend: float = 0.25
+    mm_entry_score_w_imbalance: float = 0.15
+    mm_entry_score_cooldown_penalty_max: float = 0.35
+    mm_adaptive_entry_learning_enabled: bool = False
+    mm_adaptive_entry_learning_window: int = 100
+    mm_adaptive_entry_learning_min_bin_trades: int = 10
+    mm_adaptive_entry_learning_step_up: float = 0.01
+    mm_adaptive_entry_learning_step_down: float = 0.01
+    mm_adaptive_entry_learning_max_step_per_update: float = 0.02
+    mm_adaptive_entry_learning_threshold_min: float = 0.4
+    mm_adaptive_entry_learning_threshold_max: float = 0.95
+    mm_adaptive_entry_learning_drift_alert: float = 0.20
+    mm_adaptive_entry_learning_perf_alert_delta: float = 0.15
     mm_trend_window_ticks: int = 12
     mm_trend_strength_threshold: float = 0.0
     mm_cancel_on_strong_trend: bool = False
@@ -188,6 +217,7 @@ class E2EConfig:
     mm_decision_batch_ticks: int = 3
     mm_cancel_impact_horizon_ms: int = 500
     mm_cancel_reason_summary_every: int = 20
+    mm_disable_price_move_cancel: bool = False
     max_abs_inventory_per_symbol: float = 4.0
     soft_abs_inventory_per_symbol: float = 3.2
     failure_action: str = "ALERT"
@@ -424,6 +454,90 @@ class PositionPnlTracker:
         return (self._avg_price - float(mark_price)) * abs(self._qty)
 
 
+class FillAdverseSelectionTracker:
+    def __init__(self, store: EconomicsStore) -> None:
+        self._store = store
+        self._lock = RLock()
+        self._pending: dict[str, dict[str, object]] = {}
+        self._horizons = {
+            "px_10ms": timedelta(milliseconds=10),
+            "px_100ms": timedelta(milliseconds=100),
+            "px_500ms": timedelta(milliseconds=500),
+            "px_1s": timedelta(seconds=1),
+        }
+
+    def register_fill(
+        self,
+        *,
+        trade_id: str,
+        side: str,
+        qty: float,
+        fill_price: float,
+        symbol: str,
+        fill_ts: datetime,
+    ) -> None:
+        if not trade_id:
+            return
+        with self._lock:
+            self._pending[trade_id] = {
+                "trade_id": trade_id,
+                "side": side,
+                "qty": float(qty),
+                "fill_price": float(fill_price),
+                "symbol": symbol.upper(),
+                "fill_ts": fill_ts,
+                "px_10ms": None,
+                "px_100ms": None,
+                "px_500ms": None,
+                "px_1s": None,
+            }
+
+    def on_market_data(self, data: MarketData) -> None:
+        now_ts = data.timestamp if data.timestamp.tzinfo else data.timestamp.replace(tzinfo=timezone.utc)
+        finished: list[str] = []
+        with self._lock:
+            for trade_id, row in self._pending.items():
+                if row["symbol"] != data.symbol.upper():
+                    continue
+                fill_ts = row["fill_ts"]
+                for key, horizon in self._horizons.items():
+                    if row[key] is not None:
+                        continue
+                    if now_ts >= fill_ts + horizon:
+                        row[key] = float(data.mid_price)
+                if (
+                    row["px_10ms"] is not None
+                    and row["px_100ms"] is not None
+                    and row["px_500ms"] is not None
+                    and row["px_1s"] is not None
+                ):
+                    adverse_pnl, adverse_fill = self._compute_adverse(row)
+                    self._store.update_adverse_selection(
+                        trade_id=trade_id,
+                        px_10ms=float(row["px_10ms"]),
+                        px_100ms=float(row["px_100ms"]),
+                        px_500ms=float(row["px_500ms"]),
+                        px_1s=float(row["px_1s"]),
+                        adverse_pnl=adverse_pnl,
+                        adverse_fill=adverse_fill,
+                    )
+                    finished.append(trade_id)
+            for trade_id in finished:
+                self._pending.pop(trade_id, None)
+
+    @staticmethod
+    def _compute_adverse(row: dict[str, object]) -> tuple[float, bool]:
+        side = str(row["side"])
+        qty = float(row["qty"])
+        fill = float(row["fill_price"])
+        px_1s = float(row["px_1s"])
+        if side == "1":
+            adverse_pnl = (px_1s - fill) * qty
+        else:
+            adverse_pnl = (fill - px_1s) * qty
+        return adverse_pnl, adverse_pnl < 0.0
+
+
 class TestOrchestrator:
     def __init__(self, config: E2EConfig, logger: logging.Logger) -> None:
         self.cfg = config
@@ -433,6 +547,7 @@ class TestOrchestrator:
         self.validation_store = ValidationStore(config.db_path)
         self.economics_store = EconomicsStore(config.economics_db_path)
         self.analytics_api = TradingAnalyticsAPI(self.economics_store)
+        self.adverse_tracker = FillAdverseSelectionTracker(self.economics_store)
         self.economics = UnitEconomicsCalculator(
             fee_bps_by_market={
                 MarketType.EQUITIES: Decimal("0.00"),
@@ -456,6 +571,23 @@ class TestOrchestrator:
             max_abs_inventory_per_symbol=config.max_abs_inventory_per_symbol,
             soft_abs_inventory_per_symbol=config.soft_abs_inventory_per_symbol,
         )
+        simulation_stress_params: dict[str, float | int] = {
+            "simulation_slippage_bps": config.simulation_slippage_bps,
+            "simulation_slippage_max_bps": config.simulation_slippage_max_bps,
+            "simulation_volatility_slippage_multiplier": config.simulation_volatility_slippage_multiplier,
+            "simulation_latency_network_ms": config.simulation_latency_network_ms,
+            "simulation_latency_exchange_ms": config.simulation_latency_exchange_ms,
+            "simulation_latency_jitter_ms": config.simulation_latency_jitter_ms,
+            "simulation_fill_participation": config.simulation_fill_participation,
+            "simulation_touch_fill_probability": config.simulation_touch_fill_probability,
+            "simulation_passive_fill_probability_scale": config.simulation_passive_fill_probability_scale,
+            "simulation_adverse_selection_bias": config.simulation_adverse_selection_bias,
+        }
+        active_simulation_profile, resolved_simulation_params, simulation_profile_source = resolve_simulation_profile(
+            base_params=simulation_stress_params,
+            configured_profile=config.simulation_profile,
+            runtime_override_profile=os.getenv("SIMULATION_PROFILE_OVERRIDE", ""),
+        )
         self.gateway = ExecutionGateway(
             equities_engine=_NoopExecutionEngine(),  # type: ignore[arg-type]
             forts_engine=_NoopExecutionEngine(),  # type: ignore[arg-type]
@@ -466,21 +598,31 @@ class TestOrchestrator:
             on_execution_report=self._on_execution_report,
             risk_manager=self.risk_manager,
             position_manager=self.position_manager,
-            simulation_slippage_bps=config.simulation_slippage_bps,
-            simulation_slippage_max_bps=config.simulation_slippage_max_bps,
-            simulation_volatility_slippage_multiplier=config.simulation_volatility_slippage_multiplier,
-            simulation_latency_network_ms=config.simulation_latency_network_ms,
-            simulation_latency_exchange_ms=config.simulation_latency_exchange_ms,
-            simulation_latency_jitter_ms=config.simulation_latency_jitter_ms,
-            simulation_fill_participation=config.simulation_fill_participation,
-            simulation_touch_fill_probability=config.simulation_touch_fill_probability,
-            simulation_passive_fill_probability_scale=config.simulation_passive_fill_probability_scale,
-            simulation_adverse_selection_bias=config.simulation_adverse_selection_bias,
+            simulation_slippage_bps=float(resolved_simulation_params["simulation_slippage_bps"]),
+            simulation_slippage_max_bps=float(resolved_simulation_params["simulation_slippage_max_bps"]),
+            simulation_volatility_slippage_multiplier=float(
+                resolved_simulation_params["simulation_volatility_slippage_multiplier"]
+            ),
+            simulation_latency_network_ms=int(resolved_simulation_params["simulation_latency_network_ms"]),
+            simulation_latency_exchange_ms=int(resolved_simulation_params["simulation_latency_exchange_ms"]),
+            simulation_latency_jitter_ms=int(resolved_simulation_params["simulation_latency_jitter_ms"]),
+            simulation_fill_participation=float(resolved_simulation_params["simulation_fill_participation"]),
+            simulation_touch_fill_probability=float(resolved_simulation_params["simulation_touch_fill_probability"]),
+            simulation_passive_fill_probability_scale=float(
+                resolved_simulation_params["simulation_passive_fill_probability_scale"]
+            ),
+            simulation_adverse_selection_bias=float(resolved_simulation_params["simulation_adverse_selection_bias"]),
             simulation_rng=random.Random(config.seed),
             account_by_market={
                 MarketType.EQUITIES: "SIM-EQ-ACCOUNT",
                 MarketType.FORTS: "SIM-FO-ACCOUNT",
             },
+        )
+        self.logger.info(
+            "[E2E][SIM][PROFILE] active=%s source=%s config=%s",
+            active_simulation_profile,
+            simulation_profile_source,
+            self.gateway.simulation_config_snapshot(),
         )
         self.market_maker = BasicMarketMaker(
             symbol=config.symbol,
@@ -498,6 +640,7 @@ class TestOrchestrator:
             replace_threshold_ticks=config.mm_replace_threshold_ticks,
             replace_cancel_threshold_ticks=config.mm_replace_cancel_threshold_ticks,
             replace_keep_threshold_ticks=config.mm_replace_keep_threshold_ticks,
+            replace_persist_ms=config.mm_replace_persist_ms,
             adverse_move_cancel_ticks=config.mm_adverse_move_cancel_ticks,
             fast_cancel_keep_ticks=config.mm_fast_cancel_keep_ticks,
             fast_cancel_persist_ms=config.mm_fast_cancel_persist_ms,
@@ -505,6 +648,31 @@ class TestOrchestrator:
             price_tolerance_pct=config.mm_price_tolerance_pct,
             min_order_lifetime_ms=config.mm_min_order_lifetime_ms,
             cancel_replace_cooldown_ms=config.mm_cancel_replace_cooldown_ms,
+            entry_min_spread=config.mm_entry_min_spread,
+            entry_stability_window_ticks=config.mm_entry_stability_window_ticks,
+            entry_max_bid_ask_move_ticks=config.mm_entry_max_bid_ask_move_ticks,
+            entry_anti_trend_threshold=config.mm_entry_anti_trend_threshold,
+            entry_direction_window_ticks=config.mm_entry_direction_window_ticks,
+            entry_direction_min_move_ticks=config.mm_entry_direction_min_move_ticks,
+            trade_cooldown_ms=config.mm_trade_cooldown_ms,
+            entry_min_place_interval_ms=config.mm_entry_min_place_interval_ms,
+            entry_score_threshold=config.mm_entry_score_threshold,
+            entry_score_spread_threshold=config.mm_entry_score_spread_threshold,
+            entry_score_w_spread=config.mm_entry_score_w_spread,
+            entry_score_w_stability=config.mm_entry_score_w_stability,
+            entry_score_w_trend=config.mm_entry_score_w_trend,
+            entry_score_w_imbalance=config.mm_entry_score_w_imbalance,
+            entry_score_cooldown_penalty_max=config.mm_entry_score_cooldown_penalty_max,
+            adaptive_entry_learning_enabled=config.mm_adaptive_entry_learning_enabled,
+            adaptive_entry_learning_window=config.mm_adaptive_entry_learning_window,
+            adaptive_entry_learning_min_bin_trades=config.mm_adaptive_entry_learning_min_bin_trades,
+            adaptive_entry_learning_step_up=config.mm_adaptive_entry_learning_step_up,
+            adaptive_entry_learning_step_down=config.mm_adaptive_entry_learning_step_down,
+            adaptive_entry_learning_max_step_per_update=config.mm_adaptive_entry_learning_max_step_per_update,
+            adaptive_entry_learning_threshold_min=config.mm_adaptive_entry_learning_threshold_min,
+            adaptive_entry_learning_threshold_max=config.mm_adaptive_entry_learning_threshold_max,
+            adaptive_entry_learning_drift_alert=config.mm_adaptive_entry_learning_drift_alert,
+            adaptive_entry_learning_perf_alert_delta=config.mm_adaptive_entry_learning_perf_alert_delta,
             trend_window_ticks=config.mm_trend_window_ticks,
             trend_strength_threshold=config.mm_trend_strength_threshold,
             cancel_on_strong_trend=config.mm_cancel_on_strong_trend,
@@ -517,6 +685,9 @@ class TestOrchestrator:
             decision_batch_ticks=config.mm_decision_batch_ticks,
             cancel_impact_horizon_ms=config.mm_cancel_impact_horizon_ms,
             cancel_reason_summary_every=config.mm_cancel_reason_summary_every,
+            disable_price_move_cancel=config.mm_disable_price_move_cancel,
+            cancel_analytics_sink=self.economics_store.insert_cancel_analytics,
+            entry_decision_sink=self.economics_store.insert_entry_decisions,
         )
         self.failure_monitor = FailureMonitor(
             logger=logger,
@@ -543,6 +714,9 @@ class TestOrchestrator:
         self._anomalies: list[str] = []
         self._order_last_event_ts: dict[str, datetime] = {}
         self._order_exec_count: dict[str, int] = {}
+        self._analytics_trades_processed = 0
+        self._analytics_records_written = 0
+        self._analytics_lock = RLock()
 
         self._install_subscriptions()
         self._install_gateway_audit_hook()
@@ -552,6 +726,14 @@ class TestOrchestrator:
         self.market_data_engine.subscribe(self.gateway.on_market_data)
         self.market_data_engine.subscribe(self.failure_monitor.on_market_data)
         self.market_data_engine.subscribe(self.validation_store.insert_market_data)
+        self.market_data_engine.subscribe(
+            lambda data: self.economics.on_market_data(
+                market=MarketType.EQUITIES,
+                symbol=data.symbol,
+                mid_price=Decimal(str(data.mid_price)),
+            )
+        )
+        self.market_data_engine.subscribe(self.adverse_tracker.on_market_data)
 
     def _install_gateway_audit_hook(self) -> None:
         original_send_order = self.gateway.send_order
@@ -619,23 +801,138 @@ class TestOrchestrator:
         last_qty = float(state.get("last_qty", "0") or "0")
         if last_qty <= 0:
             return
+        if new not in {"PARTIALLY_FILLED", "FILLED"}:
+            msg = (
+                f"unexpected_fill_event trade_id={state.get('exec_id','')} order_id={cl_ord_id} "
+                f"symbol={state.get('symbol','')} side={state.get('side','')} status_new={new} last_qty={last_qty}"
+            )
+            self._anomalies.append(msg)
+            self.logger.error("[E2E][ANOMALY] %s", msg)
         last_px = float(state.get("last_px", "0") or "0")
         side = state.get("side", "1")
         symbol = state.get("symbol", self.cfg.symbol)
+        md = self.market_data_engine.get_latest(symbol)
+        bid_px = Decimal(str(md.bid)) if md is not None else Decimal(str(last_px))
+        ask_px = Decimal(str(md.ask)) if md is not None else Decimal(str(last_px))
+        mid_px = Decimal(str(md.mid_price)) if md is not None else Decimal(str(last_px))
+        expected_px = bid_px if side == "1" else ask_px
+        fill_ts = datetime.now(timezone.utc)
+        time_in_book_ms = 0.0
+        if order is not None and order.created_at is not None:
+            time_in_book_ms = max(0.0, (fill_ts - order.created_at).total_seconds() * 1000.0)
 
         self.pnl_tracker.apply_fill(side=side, qty=last_qty, price=last_px)
+        self.logger.info(
+            "[E2E][ANALYTICS][START] trade_id=%s order_id=%s symbol=%s side=%s entry_price=%s exit_price=%s status_new=%s",
+            state.get("exec_id", ""),
+            cl_ord_id,
+            symbol,
+            side,
+            last_px,
+            last_px,
+            new,
+        )
         trade_record = self.economics.process_fill(
             market=MarketType.EQUITIES,
             symbol=symbol,
             side=side,
             qty=Decimal(str(last_qty)),
             price=Decimal(str(last_px)),
+            expected_price=expected_px,
+            bid=bid_px,
+            ask=ask_px,
+            mid_price=mid_px,
+            fill_ts=fill_ts,
             cl_ord_id=cl_ord_id,
             exec_id=state.get("exec_id", ""),
+            time_in_book_ms=time_in_book_ms,
         )
         if trade_record is None:
             return
+        with self._analytics_lock:
+            self._analytics_trades_processed += 1
+        self.logger.info(
+            "[E2E][ANALYTICS][TRADE_CREATED] trade_id=%s order_id=%s symbol=%s side=%s entry_price=%s exit_price=%s",
+            trade_record.get("exec_id", ""),
+            trade_record.get("cl_ord_id", ""),
+            trade_record.get("symbol", ""),
+            trade_record.get("side", ""),
+            trade_record.get("price", ""),
+            trade_record.get("price", ""),
+        )
+        trade_analytics_rows = trade_record.get("trade_analytics_rows", [])
+        round_trip_rows = trade_record.get("round_trip_rows", [])
+        self.logger.info(
+            "[E2E][ANALYTICS][DB_WRITE_START] trade_id=%s order_id=%s symbol=%s side=%s trade_rows=%s rt_rows=%s",
+            trade_record.get("exec_id", ""),
+            trade_record.get("cl_ord_id", ""),
+            trade_record.get("symbol", ""),
+            trade_record.get("side", ""),
+            len(trade_analytics_rows),
+            len(round_trip_rows),
+        )
         self.economics_store.insert_trade(trade_record)
+        self.economics_store.insert_trade_analytics(trade_analytics_rows)
+        self.economics_store.insert_round_trips(round_trip_rows)
+        written_records = 1 + len(trade_analytics_rows) + len(round_trip_rows)
+        with self._analytics_lock:
+            self._analytics_records_written += written_records
+        write_check = self.economics_store.analytics_presence_for_trade(str(trade_record.get("exec_id", "")))
+        expected_trade_rows = max(1, len(trade_analytics_rows))
+        expected_rt_rows = len(round_trip_rows)
+        self.logger.info(
+            "[E2E][ANALYTICS][DB_WRITE_DONE] trade_id=%s order_id=%s symbol=%s side=%s fill_role=%s closed_qty=%s opened_qty=%s check=%s expected_ta=%s expected_rt=%s counters=%s/%s",
+            trade_record.get("exec_id", ""),
+            trade_record.get("cl_ord_id", ""),
+            trade_record.get("symbol", ""),
+            trade_record.get("side", ""),
+            trade_record.get("fill_role", ""),
+            trade_record.get("closed_qty", ""),
+            trade_record.get("opened_qty", ""),
+            write_check,
+            expected_trade_rows,
+            expected_rt_rows,
+            self._analytics_trades_processed,
+            self._analytics_records_written,
+        )
+        self.logger.info(
+            "[E2E][ANALYTICS][DONE] trade_id=%s order_id=%s symbol=%s side=%s fill_role=%s closed_qty=%s opened_qty=%s trade_rows=%s rt_rows=%s",
+            trade_record.get("exec_id", ""),
+            trade_record.get("cl_ord_id", ""),
+            trade_record.get("symbol", ""),
+            trade_record.get("side", ""),
+            trade_record.get("fill_role", ""),
+            trade_record.get("closed_qty", ""),
+            trade_record.get("opened_qty", ""),
+            len(trade_analytics_rows),
+            len(round_trip_rows),
+        )
+        if round_trip_rows:
+            try:
+                self.market_maker.on_round_trip_outcomes(round_trip_rows)
+            except Exception as exc:
+                msg = f"adaptive_learning_update_failed err={exc}"
+                self._anomalies.append(msg)
+                self.logger.error("[E2E][ANOMALY] %s", msg)
+        if (
+            write_check.get("trade_analytics_rows", 0) < expected_trade_rows
+            or write_check.get("round_trip_rows", 0) < expected_rt_rows
+        ):
+            msg = (
+                f"analytics_missing trade_id={trade_record.get('exec_id','')} "
+                f"order_id={trade_record.get('cl_ord_id','')} symbol={trade_record.get('symbol','')} side={trade_record.get('side','')} "
+                f"expected_trade_rows={expected_trade_rows} expected_round_trip_rows={expected_rt_rows} check={write_check}"
+            )
+            self._anomalies.append(msg)
+            self.logger.error("[E2E][ANOMALY] %s", msg)
+        self.adverse_tracker.register_fill(
+            trade_id=state.get("exec_id", ""),
+            side=side,
+            qty=float(last_qty),
+            fill_price=float(last_px),
+            symbol=symbol,
+            fill_ts=fill_ts,
+        )
         net_pnl = float(trade_record["net_pnl"])
         if net_pnl <= self.cfg.negative_pnl_spike_threshold:
             msg = f"negative_pnl_spike order_id={cl_ord_id} net_pnl={net_pnl:.4f}"
@@ -723,6 +1020,12 @@ class TestOrchestrator:
                 "negative_pnl_spikes": self._negative_pnl_spikes,
                 "other": self._anomalies,
             },
+            "analytics_counters": {
+                "total_trades_processed_for_analytics": int(self._analytics_trades_processed),
+                "total_records_written": int(self._analytics_records_written),
+            },
+            "analytics_missing_fills_count": len(self.analytics_api.analytics_missing_fills(limit=100000)),
+            "entry_score_pnl_correlation": self.analytics_api.entry_score_pnl_correlation(),
         }
         self.logger.info("[E2E][RESULT] %s", json.dumps(result, ensure_ascii=True))
         return result

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
 from threading import RLock
@@ -52,6 +53,7 @@ class EconomicsStore:
                     actual_price REAL NOT NULL,
                     adverse_px_10ms REAL,
                     adverse_px_100ms REAL,
+                    adverse_px_500ms REAL,
                     adverse_px_1s REAL,
                     adverse_fill INTEGER NOT NULL DEFAULT 0,
                     hour_bucket INTEGER NOT NULL DEFAULT 0,
@@ -73,6 +75,12 @@ class EconomicsStore:
                     total_pnl REAL NOT NULL,
                     mae REAL NOT NULL,
                     mfe REAL NOT NULL,
+                    immediate_move REAL NOT NULL DEFAULT 0,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    exit_price REAL NOT NULL DEFAULT 0,
+                    entry_spread REAL NOT NULL DEFAULT 0,
+                    entry_volatility_regime TEXT NOT NULL DEFAULT 'unknown',
+                    entry_time_in_book_ms REAL NOT NULL DEFAULT 0,
                     entry_ts TEXT NOT NULL,
                     exit_ts TEXT NOT NULL
                 )
@@ -94,11 +102,65 @@ class EconomicsStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS cancel_analytics (
+                    cancel_id TEXT PRIMARY KEY,
+                    order_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    cancel_reason TEXT NOT NULL,
+                    cancel_price REAL NOT NULL,
+                    horizon_price REAL NOT NULL,
+                    missed_pnl REAL NOT NULL,
+                    horizon_ms INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cancel_analytics_reason ON cancel_analytics(cancel_reason)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entry_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_score REAL NOT NULL,
+                    spread_score REAL NOT NULL,
+                    stability_score REAL NOT NULL,
+                    trend_score REAL NOT NULL,
+                    imbalance_score REAL NOT NULL,
+                    decision TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entry_decisions_symbol_time ON entry_decisions(symbol, timestamp)"
+            )
+            self._ensure_column(conn, "trade_analytics", "adverse_px_500ms", "REAL")
+            self._ensure_column(conn, "trade_analytics", "time_in_book_ms", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "round_trip_analytics", "entry_price", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "round_trip_analytics", "exit_price", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "round_trip_analytics", "entry_spread", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "round_trip_analytics", "immediate_move", "REAL NOT NULL DEFAULT 0")
+            self._ensure_column(
+                conn, "round_trip_analytics", "entry_volatility_regime", "TEXT NOT NULL DEFAULT 'unknown'"
+            )
+            self._ensure_column(conn, "round_trip_analytics", "entry_time_in_book_ms", "REAL NOT NULL DEFAULT 0")
+            conn.execute(
+                """
                 INSERT OR IGNORE INTO analytics_state (id, cumulative_pnl, equity_peak, max_drawdown, win_count, total_trades, avg_trade_pnl)
                 VALUES (1, 0, 0, 0, 0, 0, 0)
                 """
             )
             conn.commit()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def insert_trade(self, record: dict[str, str]) -> None:
         with self._lock, sqlite3.connect(self._db_path) as conn:
@@ -167,8 +229,8 @@ class EconomicsStore:
                 INSERT OR REPLACE INTO trade_analytics(
                     trade_id, order_id, symbol, side, gross_pnl, net_pnl, fees, slippage, spread_pnl, adverse_pnl,
                     holding_pnl, expected_price, actual_price, hour_bucket, volatility_regime, spread_bucket,
-                    adverse_fill, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    adverse_fill, time_in_book_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -189,6 +251,7 @@ class EconomicsStore:
                         row.get("volatility_regime", "unknown"),
                         row.get("spread_bucket", "unknown"),
                         1 if row.get("is_adverse_fill", "0") == "1" else 0,
+                        float(row.get("time_in_book_ms", "0")),
                         row["created_at"],
                     )
                     for row in rows
@@ -203,8 +266,9 @@ class EconomicsStore:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO round_trip_analytics(
-                    round_trip_id, entry_trade_id, exit_trade_id, symbol, side, duration_ms, total_pnl, mae, mfe, entry_ts, exit_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    round_trip_id, entry_trade_id, exit_trade_id, symbol, side, duration_ms, total_pnl, mae, mfe,
+                    immediate_move, entry_price, exit_price, entry_spread, entry_volatility_regime, entry_time_in_book_ms, entry_ts, exit_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -217,6 +281,12 @@ class EconomicsStore:
                         float(row["total_pnl"]),
                         float(row["mae"]),
                         float(row["mfe"]),
+                        float(row.get("immediate_move", 0.0)),
+                        float(row.get("entry_price", 0.0)),
+                        float(row.get("exit_price", 0.0)),
+                        float(row.get("entry_spread", 0.0)),
+                        str(row.get("entry_volatility_regime", "unknown")),
+                        float(row.get("entry_time_in_book_ms", 0.0)),
                         row["entry_ts"],
                         row["exit_ts"],
                     )
@@ -231,6 +301,7 @@ class EconomicsStore:
         trade_id: str,
         px_10ms: float | None,
         px_100ms: float | None,
+        px_500ms: float | None,
         px_1s: float | None,
         adverse_pnl: float,
         adverse_fill: bool,
@@ -241,6 +312,7 @@ class EconomicsStore:
                 UPDATE trade_analytics
                 SET adverse_px_10ms=?,
                     adverse_px_100ms=?,
+                    adverse_px_500ms=?,
                     adverse_px_1s=?,
                     adverse_pnl=?,
                     adverse_fill=?
@@ -249,11 +321,69 @@ class EconomicsStore:
                 (
                     px_10ms,
                     px_100ms,
+                    px_500ms,
                     px_1s,
                     float(adverse_pnl),
                     1 if adverse_fill else 0,
                     trade_id,
                 ),
+            )
+            conn.commit()
+
+    def insert_cancel_analytics(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO cancel_analytics(
+                    cancel_id, order_id, symbol, side, cancel_reason, cancel_price, horizon_price,
+                    missed_pnl, horizon_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("cancel_id", "")),
+                        str(row.get("order_id", "")),
+                        str(row.get("symbol", "")),
+                        str(row.get("side", "")),
+                        str(row.get("cancel_reason", "unknown")),
+                        float(row.get("cancel_price", 0.0)),
+                        float(row.get("horizon_price", 0.0)),
+                        float(row.get("missed_pnl", 0.0)),
+                        int(row.get("horizon_ms", 0)),
+                        str(row.get("created_at", "")),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+
+    def insert_entry_decisions(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO entry_decisions(
+                    timestamp, symbol, side, entry_score, spread_score, stability_score,
+                    trend_score, imbalance_score, decision
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("timestamp", "")),
+                        str(row.get("symbol", "")),
+                        str(row.get("side", "")),
+                        float(row.get("entry_score", 0.0)),
+                        float(row.get("spread_score", 0.0)),
+                        float(row.get("stability_score", 0.0)),
+                        float(row.get("trend_score", 0.0)),
+                        float(row.get("imbalance_score", 0.0)),
+                        str(row.get("decision", "SKIP")),
+                    )
+                    for row in rows
+                ],
             )
             conn.commit()
 
@@ -447,22 +577,494 @@ class EconomicsStore:
         return [{"spread_bucket": r[0], "count": int(r[1]), "pnl": float(r[2])} for r in rows]
 
     def adverse_fill_stats(self) -> dict[str, float]:
+        stats = self.fill_quality_stats()
+        return {
+            "total_fills": float(stats["total_fills"]),
+            "adverse_fills": float(stats["adverse_fills_1s"]),
+            "adverse_fill_pct": float(stats["adverse_fill_rate_1s_pct"]),
+            "avg_adverse_selection_loss": float(stats["avg_adverse_selection_loss"]),
+        }
+
+    def fill_quality_stats(self) -> dict[str, float]:
         with self._lock, sqlite3.connect(self._db_path) as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
-                SELECT
-                    COUNT(1),
-                    COALESCE(SUM(CASE WHEN adverse_fill=1 THEN 1 ELSE 0 END),0),
-                    COALESCE(AVG(CASE WHEN adverse_fill=1 THEN adverse_pnl ELSE NULL END),0)
+                SELECT side, actual_price, adverse_pnl, adverse_px_10ms, adverse_px_100ms, adverse_px_500ms, adverse_px_1s
                 FROM trade_analytics
                 """
-            ).fetchone()
-        total = int(row[0]) if row else 0
-        adverse = int(row[1]) if row else 0
-        pct = (adverse / total * 100.0) if total else 0.0
+            ).fetchall()
+
+        total_fills = len(rows)
+        adverse_10ms = 0
+        adverse_100ms = 0
+        adverse_1s = 0
+        adverse_500ms = 0
+        eval_10ms = 0
+        eval_100ms = 0
+        eval_500ms = 0
+        eval_1s = 0
+        move_sum_10ms = 0.0
+        move_sum_100ms = 0.0
+        move_sum_1s = 0.0
+        abs_move_sum_10ms = 0.0
+        abs_move_sum_100ms = 0.0
+        abs_move_sum_1s = 0.0
+        move_sum_500ms = 0.0
+        abs_move_sum_500ms = 0.0
+        adverse_loss_sum = 0.0
+        adverse_loss_count = 0
+
+        for side_raw, actual_price, adverse_pnl, px_10ms, px_100ms, px_500ms, px_1s in rows:
+            side = str(side_raw).upper()
+            fill_px = float(actual_price or 0.0)
+            if fill_px <= 0:
+                continue
+            is_buy = side in {"1", "BUY"}
+            is_sell = side in {"2", "SELL"}
+            if not (is_buy or is_sell):
+                continue
+
+            adverse_pnl_value = float(adverse_pnl or 0.0)
+            if adverse_pnl_value < 0:
+                adverse_loss_sum += adverse_pnl_value
+                adverse_loss_count += 1
+
+            if px_10ms is not None:
+                px = float(px_10ms)
+                eval_10ms += 1
+                raw_move = px - fill_px
+                move_sum_10ms += raw_move
+                abs_move_sum_10ms += abs(raw_move)
+                if (is_buy and px < fill_px) or (is_sell and px > fill_px):
+                    adverse_10ms += 1
+            if px_100ms is not None:
+                px = float(px_100ms)
+                eval_100ms += 1
+                raw_move = px - fill_px
+                move_sum_100ms += raw_move
+                abs_move_sum_100ms += abs(raw_move)
+                if (is_buy and px < fill_px) or (is_sell and px > fill_px):
+                    adverse_100ms += 1
+            if px_500ms is not None:
+                px = float(px_500ms)
+                eval_500ms += 1
+                raw_move = px - fill_px
+                move_sum_500ms += raw_move
+                abs_move_sum_500ms += abs(raw_move)
+                if (is_buy and px < fill_px) or (is_sell and px > fill_px):
+                    adverse_500ms += 1
+            if px_1s is not None:
+                px = float(px_1s)
+                eval_1s += 1
+                raw_move = px - fill_px
+                move_sum_1s += raw_move
+                abs_move_sum_1s += abs(raw_move)
+                if (is_buy and px < fill_px) or (is_sell and px > fill_px):
+                    adverse_1s += 1
+
+        immediate_negative_pct = (adverse_10ms / eval_10ms * 100.0) if eval_10ms else 0.0
+        adverse_100ms_pct = (adverse_100ms / eval_100ms * 100.0) if eval_100ms else 0.0
+        adverse_500ms_pct = (adverse_500ms / eval_500ms * 100.0) if eval_500ms else 0.0
+        adverse_1s_pct = (adverse_1s / eval_1s * 100.0) if eval_1s else 0.0
+        total_evaluated_points = eval_10ms + eval_100ms + eval_500ms + eval_1s
+        total_adverse_points = adverse_10ms + adverse_100ms + adverse_500ms + adverse_1s
+        overall_adverse_selection_rate = (
+            total_adverse_points / total_evaluated_points * 100.0 if total_evaluated_points else 0.0
+        )
         return {
-            "total_fills": float(total),
-            "adverse_fills": float(adverse),
-            "adverse_fill_pct": float(pct),
-            "avg_adverse_selection_loss": float(row[2] or 0.0),
+            "total_fills": float(total_fills),
+            "evaluated_fills_10ms": float(eval_10ms),
+            "evaluated_fills_100ms": float(eval_100ms),
+            "evaluated_fills_1s": float(eval_1s),
+            "evaluated_fills_500ms": float(eval_500ms),
+            "adverse_fills_10ms": float(adverse_10ms),
+            "adverse_fills_100ms": float(adverse_100ms),
+            "adverse_fills_500ms": float(adverse_500ms),
+            "adverse_fills_1s": float(adverse_1s),
+            "immediate_negative_fills": float(adverse_10ms),
+            "immediate_negative_pct": float(immediate_negative_pct),
+            "adverse_fill_rate_10ms_pct": float(immediate_negative_pct),
+            "adverse_fill_rate_100ms_pct": float(adverse_100ms_pct),
+            "adverse_fill_rate_500ms_pct": float(adverse_500ms_pct),
+            "adverse_fill_rate_1s_pct": float(adverse_1s_pct),
+            "overall_adverse_selection_rate_pct": float(overall_adverse_selection_rate),
+            "avg_move_10ms": float(move_sum_10ms / eval_10ms) if eval_10ms else 0.0,
+            "avg_move_100ms": float(move_sum_100ms / eval_100ms) if eval_100ms else 0.0,
+            "avg_move_500ms": float(move_sum_500ms / eval_500ms) if eval_500ms else 0.0,
+            "avg_move_1s": float(move_sum_1s / eval_1s) if eval_1s else 0.0,
+            "avg_abs_move_10ms": float(abs_move_sum_10ms / eval_10ms) if eval_10ms else 0.0,
+            "avg_abs_move_100ms": float(abs_move_sum_100ms / eval_100ms) if eval_100ms else 0.0,
+            "avg_abs_move_500ms": float(abs_move_sum_500ms / eval_500ms) if eval_500ms else 0.0,
+            "avg_abs_move_1s": float(abs_move_sum_1s / eval_1s) if eval_1s else 0.0,
+            "avg_adverse_selection_loss": float(adverse_loss_sum / adverse_loss_count) if adverse_loss_count else 0.0,
         }
+
+    def trade_outcome_analysis(self) -> dict[str, object]:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    rt.entry_trade_id,
+                    rt.exit_trade_id,
+                    rt.symbol,
+                    rt.side,
+                    rt.entry_price,
+                    rt.exit_price,
+                    rt.total_pnl,
+                    rt.duration_ms,
+                    rt.mae,
+                    rt.mfe,
+                    rt.immediate_move,
+                    rt.entry_spread,
+                    rt.entry_volatility_regime,
+                    rt.entry_time_in_book_ms,
+                    ta.adverse_px_10ms,
+                    ta.adverse_px_100ms,
+                    ta.adverse_px_500ms
+                FROM round_trip_analytics rt
+                LEFT JOIN trade_analytics ta ON ta.trade_id = rt.entry_trade_id
+                ORDER BY rt.exit_ts
+                """
+            ).fetchall()
+
+        trades: list[dict[str, object]] = []
+        good: list[dict[str, object]] = []
+        bad: list[dict[str, object]] = []
+        immediate_adverse = 0
+        immediate_eval = 0
+        bad_immediate = 0
+        bad_eval = 0
+        bad_later = 0
+        spread_groups: dict[str, list[float]] = {"narrow": [], "medium": [], "wide": []}
+        vol_groups: dict[str, list[float]] = {}
+        mae_sum = 0.0
+        mfe_sum = 0.0
+        mae_count = 0
+
+        for row in rows:
+            side = str(row[3] or "")
+            entry_price = float(row[4] or 0.0)
+            exit_price = float(row[5] or 0.0)
+            pnl = float(row[6] or 0.0)
+            duration = float(row[7] or 0.0)
+            mae = float(row[8] or 0.0)
+            mfe = float(row[9] or 0.0)
+            immediate_move = float(row[10] or 0.0)
+            entry_spread = float(row[11] or 0.0)
+            entry_volatility = str(row[12] or "unknown")
+            entry_time_in_book_ms = float(row[13] or 0.0)
+            px_10ms = float(row[14]) if row[14] is not None else None
+            px_100ms = float(row[15]) if row[15] is not None else None
+            px_500ms = float(row[16]) if row[16] is not None else None
+
+            sign = 1.0 if side.upper() == "LONG" else -1.0
+            move_10ms = (px_10ms - entry_price) if px_10ms is not None else None
+            move_100ms = (px_100ms - entry_price) if px_100ms is not None else None
+            move_500ms = (px_500ms - entry_price) if px_500ms is not None else None
+            adverse_10ms = bool(px_10ms is not None and sign * move_10ms < 0)  # type: ignore[arg-type]
+            adverse_100ms = bool(px_100ms is not None and sign * move_100ms < 0)  # type: ignore[arg-type]
+            adverse_500ms = bool(px_500ms is not None and sign * move_500ms < 0)  # type: ignore[arg-type]
+
+            record = {
+                "entry_trade_id": row[0],
+                "exit_trade_id": row[1],
+                "symbol": row[2],
+                "side": side,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "duration_ms": duration,
+                "mae": mae,
+                "mfe": mfe,
+                "immediate_move": immediate_move,
+                "entry_spread": entry_spread,
+                "entry_volatility_regime": entry_volatility,
+                "entry_time_in_book_ms": entry_time_in_book_ms,
+                "move_10ms": move_10ms if move_10ms is not None else 0.0,
+                "move_100ms": move_100ms if move_100ms is not None else 0.0,
+                "move_500ms": move_500ms if move_500ms is not None else 0.0,
+                "adverse_10ms": adverse_10ms,
+                "adverse_100ms": adverse_100ms,
+                "adverse_500ms": adverse_500ms,
+                "classification": "good_trade" if pnl > 0 else ("bad_trade" if pnl < 0 else "flat_trade"),
+            }
+            trades.append(record)
+
+            if pnl > 0:
+                good.append(record)
+            elif pnl < 0:
+                bad.append(record)
+
+            if px_10ms is not None:
+                immediate_eval += 1
+                if adverse_10ms:
+                    immediate_adverse += 1
+            if pnl < 0 and px_10ms is not None:
+                bad_eval += 1
+                if adverse_10ms:
+                    bad_immediate += 1
+            if pnl < 0 and (not adverse_10ms) and (adverse_100ms or adverse_500ms):
+                bad_later += 1
+
+            if entry_spread <= 0.02:
+                spread_groups["narrow"].append(pnl)
+            elif entry_spread <= 0.05:
+                spread_groups["medium"].append(pnl)
+            else:
+                spread_groups["wide"].append(pnl)
+            vol_groups.setdefault(entry_volatility, []).append(pnl)
+            mae_sum += mae
+            mfe_sum += mfe
+            mae_count += 1
+
+        def _avg(values: list[float]) -> float:
+            return float(sum(values) / len(values)) if values else 0.0
+
+        good_spreads = [float(r["entry_spread"]) for r in good]
+        bad_spreads = [float(r["entry_spread"]) for r in bad]
+        good_time = [float(r["entry_time_in_book_ms"]) for r in good]
+        bad_time = [float(r["entry_time_in_book_ms"]) for r in bad]
+
+        return {
+            "total_round_trips": float(len(trades)),
+            "good_trades": float(len(good)),
+            "bad_trades": float(len(bad)),
+            "immediately_adverse_pct": float((immediate_adverse / immediate_eval * 100.0) if immediate_eval else 0.0),
+            "avg_mae": float(mae_sum / mae_count) if mae_count else 0.0,
+            "avg_mfe": float(mfe_sum / mae_count) if mae_count else 0.0,
+            "avg_pnl_by_spread_bucket": {k: _avg(v) for k, v in spread_groups.items()},
+            "avg_pnl_by_volatility_regime": {k: _avg(v) for k, v in vol_groups.items()},
+            "good_vs_bad_entry": {
+                "good_avg_entry_spread": _avg(good_spreads),
+                "bad_avg_entry_spread": _avg(bad_spreads),
+                "good_avg_time_in_book_ms": _avg(good_time),
+                "bad_avg_time_in_book_ms": _avg(bad_time),
+            },
+            "patterns": {
+                "bad_trades_immediately_negative_pct": float((bad_immediate / bad_eval * 100.0) if bad_eval else 0.0),
+                "bad_trades_turn_negative_later_pct": float((bad_later / len(bad) * 100.0) if bad else 0.0),
+                "good_trades_avg_spread_gt_bad": _avg(good_spreads) > _avg(bad_spreads),
+            },
+            "trades": trades,
+        }
+
+    def entry_move_10ms(self, *, trade_id: str, side: str, entry_price: float) -> float:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT adverse_px_10ms FROM trade_analytics WHERE trade_id=?",
+                (trade_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return 0.0
+        px_10ms = float(row[0])
+        ep = float(entry_price)
+        if side.upper() == "LONG":
+            return px_10ms - ep
+        return ep - px_10ms
+
+    def entry_decisions_by_side(self) -> list[dict[str, float | int | str]]:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT side, decision, COUNT(1), AVG(entry_score)
+                FROM entry_decisions
+                GROUP BY side, decision
+                ORDER BY side, decision
+                """
+            ).fetchall()
+        return [
+            {
+                "side": str(r[0]),
+                "decision": str(r[1]),
+                "count": int(r[2]),
+                "avg_entry_score": float(r[3] or 0.0),
+            }
+            for r in rows
+        ]
+
+    def analytics_missing_fills(self, *, limit: int = 500) -> list[dict[str, object]]:
+        limit = max(1, int(limit))
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    te.exec_id,
+                    te.cl_ord_id,
+                    te.symbol,
+                    te.side,
+                    te.price,
+                    te.created_at
+                FROM trade_economics te
+                LEFT JOIN trade_analytics ta ON ta.trade_id = te.exec_id
+                WHERE ta.trade_id IS NULL
+                ORDER BY te.id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "trade_id": str(r[0] or ""),
+                "order_id": str(r[1] or ""),
+                "symbol": str(r[2] or ""),
+                "side": str(r[3] or ""),
+                "price": float(r[4] or 0.0),
+                "created_at": str(r[5] or ""),
+            }
+            for r in rows
+        ]
+
+    def entry_score_pnl_correlation(self) -> dict[str, float]:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    rt.total_pnl,
+                    (
+                        SELECT ed.entry_score
+                        FROM entry_decisions ed
+                        WHERE ed.symbol = rt.symbol
+                          AND ed.decision = 'EXECUTE'
+                          AND (
+                              (rt.side = 'LONG' AND ed.side = 'BUY')
+                              OR (rt.side = 'SHORT' AND ed.side = 'SELL')
+                          )
+                          AND ed.timestamp <= rt.entry_ts
+                        ORDER BY ed.timestamp DESC
+                        LIMIT 1
+                    ) AS matched_entry_score
+                FROM round_trip_analytics rt
+                ORDER BY rt.exit_ts
+                """
+            ).fetchall()
+        pairs: list[tuple[float, float]] = []
+        for pnl_raw, score_raw in rows:
+            if score_raw is None:
+                continue
+            pairs.append((float(score_raw), float(pnl_raw or 0.0)))
+        if len(pairs) < 2:
+            return {
+                "matched_round_trips": float(len(pairs)),
+                "total_round_trips": float(len(rows)),
+                "pearson_corr_entry_score_vs_pnl": 0.0,
+            }
+        scores = [p[0] for p in pairs]
+        pnls = [p[1] for p in pairs]
+        mean_score = sum(scores) / len(scores)
+        mean_pnl = sum(pnls) / len(pnls)
+        cov = sum((s - mean_score) * (p - mean_pnl) for s, p in pairs)
+        var_s = sum((s - mean_score) ** 2 for s in scores)
+        var_p = sum((p - mean_pnl) ** 2 for p in pnls)
+        denom = math.sqrt(var_s * var_p)
+        corr = (cov / denom) if denom > 1e-12 else 0.0
+        return {
+            "matched_round_trips": float(len(pairs)),
+            "total_round_trips": float(len(rows)),
+            "pearson_corr_entry_score_vs_pnl": float(corr),
+            "avg_entry_score_matched": float(mean_score),
+            "avg_pnl_matched": float(mean_pnl),
+        }
+
+    def analytics_presence_for_trade(self, trade_id: str) -> dict[str, int]:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            ta = conn.execute(
+                "SELECT COUNT(1) FROM trade_analytics WHERE trade_id=?",
+                (trade_id,),
+            ).fetchone()
+            rt = conn.execute(
+                "SELECT COUNT(1) FROM round_trip_analytics WHERE entry_trade_id=? OR exit_trade_id=?",
+                (trade_id, trade_id),
+            ).fetchone()
+        return {
+            "trade_analytics_rows": int(ta[0]) if ta and ta[0] is not None else 0,
+            "round_trip_rows": int(rt[0]) if rt and rt[0] is not None else 0,
+        }
+
+    def backfill_trade_analytics(self, *, limit: int = 100) -> dict[str, int]:
+        limit = max(1, int(limit))
+        scanned = 0
+        existing = 0
+        inserted = 0
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    exec_id,
+                    cl_ord_id,
+                    symbol,
+                    side,
+                    gross_pnl,
+                    net_pnl,
+                    fees,
+                    price,
+                    created_at,
+                    CAST(strftime('%H', created_at) AS INTEGER)
+                FROM trade_economics
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            for r in rows:
+                scanned += 1
+                trade_id = str(r[0] or "")
+                if not trade_id:
+                    continue
+                exists_row = conn.execute(
+                    "SELECT COUNT(1) FROM trade_analytics WHERE trade_id=?",
+                    (trade_id,),
+                ).fetchone()
+                if exists_row and int(exists_row[0]) > 0:
+                    existing += 1
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO trade_analytics(
+                        trade_id, order_id, symbol, side, gross_pnl, net_pnl, fees, slippage, spread_pnl, adverse_pnl,
+                        holding_pnl, expected_price, actual_price, adverse_fill, hour_bucket, volatility_regime, spread_bucket,
+                        time_in_book_ms, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, 0, ?, 'unknown', 'unknown', 0, ?)
+                    """,
+                    (
+                        trade_id,
+                        str(r[1] or ""),
+                        str(r[2] or ""),
+                        str(r[3] or ""),
+                        float(r[4] or 0.0),
+                        float(r[5] or 0.0),
+                        float(r[6] or 0.0),
+                        float(r[7] or 0.0),
+                        float(r[7] or 0.0),
+                        int(r[9] or 0),
+                        str(r[8] or ""),
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+        return {"scanned": scanned, "existing": existing, "inserted": inserted}
+
+    def missed_pnl_by_cancel_reason(self) -> list[dict[str, float | int | str]]:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    cancel_reason,
+                    COUNT(1),
+                    COALESCE(SUM(missed_pnl),0),
+                    COALESCE(AVG(missed_pnl),0),
+                    COALESCE(SUM(CASE WHEN missed_pnl > 0 THEN 1 ELSE 0 END),0)
+                FROM cancel_analytics
+                GROUP BY cancel_reason
+                ORDER BY SUM(missed_pnl) DESC
+                """
+            ).fetchall()
+        return [
+            {
+                "cancel_reason": r[0],
+                "count": int(r[1]),
+                "missed_pnl": float(r[2]),
+                "avg_missed_pnl": float(r[3]),
+                "harmful_cancels": int(r[4]),
+            }
+            for r in rows
+        ]

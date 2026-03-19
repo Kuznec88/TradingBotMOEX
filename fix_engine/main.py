@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from order_models import MarketType, OrderRequest
 from order_manager import OrderManager
 from position_manager import PositionManager
 from risk_manager import RiskManager
+from simulation_profiles import normalize_simulation_profile, resolve_simulation_profile
 from structured_logging import StructuredLoggingRuntime, configure_structured_logging, log_event
 from trade_client import MoexFixApplication
 from unit_economics import UnitEconomicsCalculator, _d
@@ -139,6 +141,7 @@ class FillAdverseSelectionTracker:
         self._horizons = {
             "px_10ms": timedelta(milliseconds=10),
             "px_100ms": timedelta(milliseconds=100),
+            "px_500ms": timedelta(milliseconds=500),
             "px_1s": timedelta(seconds=1),
         }
 
@@ -162,6 +165,7 @@ class FillAdverseSelectionTracker:
                 "fill_ts": fill_ts,
                 "px_10ms": None,
                 "px_100ms": None,
+                "px_500ms": None,
                 "px_1s": None,
             }
 
@@ -178,12 +182,18 @@ class FillAdverseSelectionTracker:
                         continue
                     if now_ts >= fill_ts + horizon:
                         row[key] = float(data.mid_price)
-                if row["px_10ms"] is not None and row["px_100ms"] is not None and row["px_1s"] is not None:
+                if (
+                    row["px_10ms"] is not None
+                    and row["px_100ms"] is not None
+                    and row["px_500ms"] is not None
+                    and row["px_1s"] is not None
+                ):
                     adverse_pnl, adverse_fill = self._compute_adverse(row)
                     self._store.update_adverse_selection(
                         trade_id=trade_id,
                         px_10ms=float(row["px_10ms"]),
                         px_100ms=float(row["px_100ms"]),
+                        px_500ms=float(row["px_500ms"]),
                         px_1s=float(row["px_1s"]),
                         adverse_pnl=adverse_pnl,
                         adverse_fill=adverse_fill,
@@ -525,6 +535,11 @@ def run() -> None:
     failure_monitor: FailureMonitor | None = None
     market_maker: BasicMarketMaker | None = None
     account_check_pending: set[str] = set()
+    analytics_counters: dict[str, int] = {
+        "total_trades_processed_for_analytics": 0,
+        "total_records_written": 0,
+    }
+    analytics_lock = RLock()
 
     def _strategy_inventory_allowed(symbol: str, side: str, qty: float) -> bool:
         inv_decision = position_manager.pre_check_order(symbol=symbol, side=side, qty=qty)
@@ -617,6 +632,20 @@ def run() -> None:
 
         last_qty = _d(state.get("last_qty", "0"))
         if last_qty > 0:
+            if status_new not in {"PARTIALLY_FILLED", "FILLED"}:
+                log_event(
+                    logger,
+                    level=logging.ERROR,
+                    component="AnalyticsPipeline",
+                    event="unexpected_fill_event",
+                    correlation_id=cl_ord_id,
+                    trade_id=state.get("exec_id", ""),
+                    order_id=cl_ord_id,
+                    symbol=state.get("symbol", ""),
+                    side=state.get("side", ""),
+                    status_new=status_new,
+                    last_qty=float(last_qty),
+                )
             raw_last_px = (state.get("last_px", "") or "").strip()
             raw_avg_px = (state.get("avg_px", "") or "").strip()
             fill_px_str = raw_last_px or raw_avg_px or "0"
@@ -629,6 +658,26 @@ def run() -> None:
             mid_px = _d(md.mid_price) if md is not None else fill_px
             expected_px = bid_px if state.get("side", "1") == "1" else ask_px
             fill_ts = datetime.now(timezone.utc)
+            time_in_book_ms = 0.0
+            if order is not None and order.created_at is not None:
+                try:
+                    time_in_book_ms = max(0.0, (fill_ts - order.created_at).total_seconds() * 1000.0)
+                except Exception:
+                    time_in_book_ms = 0.0
+            log_event(
+                logger,
+                level=logging.INFO,
+                component="AnalyticsPipeline",
+                event="analytics_calc_start",
+                correlation_id=cl_ord_id,
+                trade_id=trade_id,
+                order_id=cl_ord_id,
+                symbol=symbol,
+                side=state.get("side", "1"),
+                entry_price=float(fill_px),
+                exit_price=float(fill_px),
+                status_new=status_new,
+            )
             log_event(
                 logger,
                 level=logging.INFO,
@@ -657,11 +706,141 @@ def run() -> None:
                 fill_ts=fill_ts,
                 cl_ord_id=state.get("cl_ord_id", ""),
                 exec_id=state.get("exec_id", ""),
+                time_in_book_ms=time_in_book_ms,
             )
             if trade_record is not None:
+                with analytics_lock:
+                    analytics_counters["total_trades_processed_for_analytics"] += 1
+                log_event(
+                    logger,
+                    level=logging.INFO,
+                    component="AnalyticsPipeline",
+                    event="trade_created",
+                    correlation_id=cl_ord_id,
+                    trade_id=str(trade_record.get("exec_id", "")),
+                    order_id=str(trade_record.get("cl_ord_id", "")),
+                    symbol=str(trade_record.get("symbol", "")),
+                    side=str(trade_record.get("side", "")),
+                    entry_price=float(trade_record.get("price", 0.0)),
+                    exit_price=float(trade_record.get("price", 0.0)),
+                )
+                trade_analytics_rows = trade_record.get("trade_analytics_rows", [])
+                round_trip_rows = trade_record.get("round_trip_rows", [])
+                log_event(
+                    logger,
+                    level=logging.INFO,
+                    component="AnalyticsPipeline",
+                    event="analytics_db_write_start",
+                    correlation_id=cl_ord_id,
+                    trade_id=str(trade_record.get("exec_id", "")),
+                    order_id=str(trade_record.get("cl_ord_id", "")),
+                    symbol=str(trade_record.get("symbol", "")),
+                    side=str(trade_record.get("side", "")),
+                    trade_analytics_rows=len(trade_analytics_rows),
+                    round_trip_rows=len(round_trip_rows),
+                )
                 economics_store.insert_trade(trade_record)
-                economics_store.insert_trade_analytics(trade_record.get("trade_analytics_rows", []))
-                economics_store.insert_round_trips(trade_record.get("round_trip_rows", []))
+                economics_store.insert_trade_analytics(trade_analytics_rows)
+                economics_store.insert_round_trips(round_trip_rows)
+                written_records = 1 + len(trade_analytics_rows) + len(round_trip_rows)
+                with analytics_lock:
+                    analytics_counters["total_records_written"] += written_records
+                write_check = economics_store.analytics_presence_for_trade(str(trade_record.get("exec_id", "")))
+                expected_trade_rows = max(1, len(trade_analytics_rows))
+                expected_rt_rows = len(round_trip_rows)
+                if (
+                    write_check["trade_analytics_rows"] < expected_trade_rows
+                    or write_check["round_trip_rows"] < expected_rt_rows
+                ):
+                    log_event(
+                        logger,
+                        level=logging.ERROR,
+                        component="AnalyticsPipeline",
+                        event="analytics_missing_after_trade",
+                        correlation_id=cl_ord_id,
+                        trade_id=str(trade_record.get("exec_id", "")),
+                        order_id=str(trade_record.get("cl_ord_id", "")),
+                        symbol=str(trade_record.get("symbol", "")),
+                        side=str(trade_record.get("side", "")),
+                        entry_price=float(trade_record.get("price", 0.0)),
+                        exit_price=float(trade_record.get("price", 0.0)),
+                        expected_trade_rows=expected_trade_rows,
+                        expected_round_trip_rows=expected_rt_rows,
+                        write_check=write_check,
+                    )
+                log_event(
+                    logger,
+                    level=logging.INFO,
+                    component="AnalyticsPipeline",
+                    event="analytics_db_write_done",
+                    correlation_id=cl_ord_id,
+                    trade_id=str(trade_record.get("exec_id", "")),
+                    order_id=str(trade_record.get("cl_ord_id", "")),
+                    symbol=str(trade_record.get("symbol", "")),
+                    side=str(trade_record.get("side", "")),
+                    write_check=write_check,
+                    fill_role=str(trade_record.get("fill_role", "")),
+                    closed_qty=float(_d(str(trade_record.get("closed_qty", "0")))),
+                    opened_qty=float(_d(str(trade_record.get("opened_qty", "0")))),
+                    db_insert_succeeded=(
+                        write_check["trade_analytics_rows"] >= expected_trade_rows
+                        and write_check["round_trip_rows"] >= expected_rt_rows
+                    ),
+                    total_trades_processed_for_analytics=analytics_counters["total_trades_processed_for_analytics"],
+                    total_records_written=analytics_counters["total_records_written"],
+                )
+                log_event(
+                    logger,
+                    level=logging.INFO,
+                    component="AnalyticsPipeline",
+                    event="analytics_calc_done",
+                    correlation_id=cl_ord_id,
+                    trade_id=str(trade_record.get("exec_id", "")),
+                    order_id=str(trade_record.get("cl_ord_id", "")),
+                    symbol=str(trade_record.get("symbol", "")),
+                    side=str(trade_record.get("side", "")),
+                    fill_role=str(trade_record.get("fill_role", "")),
+                    closed_qty=float(_d(str(trade_record.get("closed_qty", "0")))),
+                    opened_qty=float(_d(str(trade_record.get("opened_qty", "0")))),
+                    trade_analytics_rows=len(trade_analytics_rows),
+                    round_trip_rows=len(round_trip_rows),
+                )
+                for row in round_trip_rows:
+                    immediate_move_10ms = economics_store.entry_move_10ms(
+                        trade_id=str(row.get("entry_trade_id", "")),
+                        side=str(row.get("side", "")),
+                        entry_price=float(row.get("entry_price", 0.0)),
+                    )
+                    immediate_move = (
+                        immediate_move_10ms if abs(immediate_move_10ms) > 1e-12 else float(row.get("immediate_move", 0.0))
+                    )
+                    log_event(
+                        logger,
+                        level=logging.INFO,
+                        component="TradeAnalysis",
+                        event="trade_outcome",
+                        correlation_id=str(row.get("entry_trade_id", "")),
+                        symbol=str(row.get("symbol", "")),
+                        side=str(row.get("side", "")),
+                        pnl=float(row.get("total_pnl", 0.0)),
+                        mae=float(row.get("mae", 0.0)),
+                        mfe=float(row.get("mfe", 0.0)),
+                        duration_ms=float(row.get("duration_ms", 0.0)),
+                        immediate_move=float(immediate_move),
+                        immediate_move_10ms=float(immediate_move_10ms),
+                    )
+                if market_maker is not None and round_trip_rows:
+                    try:
+                        market_maker.on_round_trip_outcomes(round_trip_rows)
+                    except Exception as exc:
+                        log_event(
+                            logger,
+                            level=logging.ERROR,
+                            component="Strategy",
+                            event="adaptive_learning_update_failed",
+                            correlation_id=cl_ord_id,
+                            error=str(exc),
+                        )
                 risk_manager.on_trade_result(float(trade_record["net_pnl"]))
                 metrics = analytics_api.get_metrics()
                 adverse_tracker.register_fill(
@@ -796,16 +975,39 @@ def run() -> None:
         trading_session_id="FUT",
         trading_account=trading_account_forts,
     )
-    sim_slippage_bps = _read_float(cfg_for_optional, "SimulationSlippageBps", 2.0)
-    sim_slippage_max_bps = _read_float(cfg_for_optional, "SimulationSlippageMaxBps", 25.0)
-    sim_vol_slippage_multiplier = _read_float(cfg_for_optional, "SimulationVolatilitySlippageMultiplier", 1.5)
-    sim_latency_network_ms = _read_int(cfg_for_optional, "SimulationNetworkLatencyMs", 20)
-    sim_latency_exchange_ms = _read_int(cfg_for_optional, "SimulationExchangeLatencyMs", 30)
-    sim_latency_jitter_ms = _read_int(cfg_for_optional, "SimulationLatencyJitterMs", 40)
-    sim_fill_participation = _read_float(cfg_for_optional, "SimulationFillParticipation", 0.25)
-    sim_touch_fill_probability = _read_float(cfg_for_optional, "SimulationTouchFillProbability", 0.15)
-    sim_passive_fill_scale = _read_float(cfg_for_optional, "SimulationPassiveFillProbabilityScale", 0.5)
-    sim_adverse_selection_bias = _read_float(cfg_for_optional, "SimulationAdverseSelectionBias", 0.35)
+    simulation_stress_params: dict[str, float | int] = {
+        "simulation_slippage_bps": _read_float(cfg_for_optional, "SimulationSlippageBps", 2.0),
+        "simulation_slippage_max_bps": _read_float(cfg_for_optional, "SimulationSlippageMaxBps", 25.0),
+        "simulation_volatility_slippage_multiplier": _read_float(
+            cfg_for_optional, "SimulationVolatilitySlippageMultiplier", 1.5
+        ),
+        "simulation_latency_network_ms": _read_int(cfg_for_optional, "SimulationNetworkLatencyMs", 20),
+        "simulation_latency_exchange_ms": _read_int(cfg_for_optional, "SimulationExchangeLatencyMs", 30),
+        "simulation_latency_jitter_ms": _read_int(cfg_for_optional, "SimulationLatencyJitterMs", 40),
+        "simulation_fill_participation": _read_float(cfg_for_optional, "SimulationFillParticipation", 0.25),
+        "simulation_touch_fill_probability": _read_float(cfg_for_optional, "SimulationTouchFillProbability", 0.15),
+        "simulation_passive_fill_probability_scale": _read_float(
+            cfg_for_optional, "SimulationPassiveFillProbabilityScale", 0.5
+        ),
+        "simulation_adverse_selection_bias": _read_float(cfg_for_optional, "SimulationAdverseSelectionBias", 0.35),
+    }
+    configured_simulation_profile = _read_default_optional_setting(cfg_for_optional, "SimulationProfile") or "STRESS"
+    runtime_simulation_profile_override = os.getenv("SIMULATION_PROFILE_OVERRIDE", "")
+    active_simulation_profile, resolved_simulation_params, simulation_profile_source = resolve_simulation_profile(
+        base_params=simulation_stress_params,
+        configured_profile=configured_simulation_profile,
+        runtime_override_profile=runtime_simulation_profile_override,
+    )
+    sim_slippage_bps = float(resolved_simulation_params["simulation_slippage_bps"])
+    sim_slippage_max_bps = float(resolved_simulation_params["simulation_slippage_max_bps"])
+    sim_vol_slippage_multiplier = float(resolved_simulation_params["simulation_volatility_slippage_multiplier"])
+    sim_latency_network_ms = int(resolved_simulation_params["simulation_latency_network_ms"])
+    sim_latency_exchange_ms = int(resolved_simulation_params["simulation_latency_exchange_ms"])
+    sim_latency_jitter_ms = int(resolved_simulation_params["simulation_latency_jitter_ms"])
+    sim_fill_participation = float(resolved_simulation_params["simulation_fill_participation"])
+    sim_touch_fill_probability = float(resolved_simulation_params["simulation_touch_fill_probability"])
+    sim_passive_fill_scale = float(resolved_simulation_params["simulation_passive_fill_probability_scale"])
+    sim_adverse_selection_bias = float(resolved_simulation_params["simulation_adverse_selection_bias"])
     strategy_min_spread = _read_float(cfg_for_optional, "StrategyMinSpreadThreshold", 0.0)
     strategy_max_volatility = _read_float(cfg_for_optional, "StrategyMaxVolatilityThreshold", 1.0)
     strategy_vol_window = _read_int(cfg_for_optional, "StrategyVolatilityWindow", 20)
@@ -822,13 +1024,45 @@ def run() -> None:
     mm_replace_keep_threshold_ticks = _read_float(
         cfg_for_optional, "MMReplaceKeepThresholdTicks", max(0.0, float(mm_replace_threshold_ticks) * 0.5)
     )
+    mm_replace_persist_ms = _read_int(cfg_for_optional, "MMReplacePersistMs", 220)
     mm_adverse_move_cancel_ticks = _read_int(cfg_for_optional, "MMAdverseMoveCancelTicks", 3)
     mm_fast_cancel_keep_ticks = _read_float(cfg_for_optional, "MMFastCancelKeepTicks", 1.5)
     mm_fast_cancel_persist_ms = _read_int(cfg_for_optional, "MMFastCancelPersistMs", 180)
     mm_price_tolerance_ticks = _read_float(cfg_for_optional, "MMPriceToleranceTicks", 0.0)
     mm_price_tolerance_pct = _read_float(cfg_for_optional, "MMPriceTolerancePct", 0.0)
-    mm_min_order_lifetime_ms = _read_int(cfg_for_optional, "MMMinOrderLifetimeMs", 150)
+    mm_min_order_lifetime_ms = _read_int(cfg_for_optional, "MMMinOrderLifetimeMs", 200)
     mm_cancel_replace_cooldown_ms = _read_int(cfg_for_optional, "MMCancelReplaceCooldownMs", 120)
+    mm_entry_min_spread = _read_float(cfg_for_optional, "MMEntryMinSpread", 0.0)
+    mm_entry_stability_window_ticks = _read_int(cfg_for_optional, "MMEntryStabilityWindowTicks", 8)
+    mm_entry_max_bid_ask_move_ticks = _read_float(cfg_for_optional, "MMEntryMaxBidAskMoveTicks", 2.0)
+    mm_entry_anti_trend_threshold = _read_float(cfg_for_optional, "MMEntryAntiTrendThreshold", 0.0)
+    mm_entry_direction_window_ticks = _read_int(cfg_for_optional, "MMEntryDirectionWindowTicks", 12)
+    mm_entry_direction_min_move_ticks = _read_float(cfg_for_optional, "MMEntryDirectionMinMoveTicks", 1.0)
+    mm_trade_cooldown_ms = _read_int(cfg_for_optional, "MMTradeCooldownMs", 300)
+    mm_entry_min_place_interval_ms = _read_int(cfg_for_optional, "MMEntryMinPlaceIntervalMs", 200)
+    mm_entry_score_threshold = _read_float(cfg_for_optional, "MMEntryScoreThreshold", 0.6)
+    mm_entry_score_spread_threshold = _read_float(cfg_for_optional, "MMEntryScoreSpreadThreshold", 0.02)
+    mm_entry_score_w_spread = _read_float(cfg_for_optional, "MMEntryScoreWSpread", 0.35)
+    mm_entry_score_w_stability = _read_float(cfg_for_optional, "MMEntryScoreWStability", 0.25)
+    mm_entry_score_w_trend = _read_float(cfg_for_optional, "MMEntryScoreWTrend", 0.25)
+    mm_entry_score_w_imbalance = _read_float(cfg_for_optional, "MMEntryScoreWImbalance", 0.15)
+    mm_entry_score_cooldown_penalty_max = _read_float(
+        cfg_for_optional, "MMEntryScoreCooldownPenaltyMax", 0.35
+    )
+    mm_adaptive_learning_enabled = _read_bool(cfg_for_optional, "MMAdaptiveEntryLearningEnabled", False)
+    mm_adaptive_learning_window = _read_int(cfg_for_optional, "MMAdaptiveEntryLearningWindow", 100)
+    mm_adaptive_learning_min_bin_trades = _read_int(cfg_for_optional, "MMAdaptiveEntryLearningMinBinTrades", 10)
+    mm_adaptive_learning_step_up = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningStepUp", 0.01)
+    mm_adaptive_learning_step_down = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningStepDown", 0.01)
+    mm_adaptive_learning_max_step_per_update = _read_float(
+        cfg_for_optional, "MMAdaptiveEntryLearningMaxStepPerUpdate", 0.02
+    )
+    mm_adaptive_learning_threshold_min = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningThresholdMin", 0.4)
+    mm_adaptive_learning_threshold_max = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningThresholdMax", 0.95)
+    mm_adaptive_learning_drift_alert = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningDriftAlert", 0.20)
+    mm_adaptive_learning_perf_alert_delta = _read_float(
+        cfg_for_optional, "MMAdaptiveEntryLearningPerfAlertDelta", 0.15
+    )
     mm_trend_window_ticks = _read_int(cfg_for_optional, "MMTrendWindowTicks", 12)
     mm_trend_strength_threshold = _read_float(cfg_for_optional, "MMTrendStrengthThreshold", 0.0)
     mm_cancel_on_strong_trend = _read_bool(cfg_for_optional, "MMCancelOnStrongTrend", False)
@@ -841,6 +1075,7 @@ def run() -> None:
     mm_decision_batch_ticks = _read_int(cfg_for_optional, "MMDecisionBatchTicks", 3)
     mm_cancel_impact_horizon_ms = _read_int(cfg_for_optional, "MMCancelImpactHorizonMs", 500)
     mm_cancel_reason_summary_every = _read_int(cfg_for_optional, "MMCancelReasonSummaryEvery", 20)
+    mm_disable_price_move_cancel = _read_bool(cfg_for_optional, "MMDisablePriceMoveCancel", False)
     gateway = ExecutionGateway(
         equities_engine=equities_engine,
         forts_engine=forts_engine,
@@ -865,6 +1100,13 @@ def run() -> None:
             MarketType.EQUITIES: trading_account_equities,
             MarketType.FORTS: trading_account_forts,
         },
+    )
+    logger.info(
+        "[SIM][PROFILE] active=%s source=%s simulation_mode=%s config=%s",
+        active_simulation_profile,
+        simulation_profile_source,
+        simulation_mode,
+        gateway.simulation_config_snapshot(),
     )
     if failure_handling_enabled:
         failure_monitor = FailureMonitor(
@@ -919,6 +1161,7 @@ def run() -> None:
             replace_threshold_ticks=mm_replace_threshold_ticks,
             replace_cancel_threshold_ticks=mm_replace_cancel_threshold_ticks,
             replace_keep_threshold_ticks=mm_replace_keep_threshold_ticks,
+            replace_persist_ms=mm_replace_persist_ms,
             adverse_move_cancel_ticks=mm_adverse_move_cancel_ticks,
             fast_cancel_keep_ticks=mm_fast_cancel_keep_ticks,
             fast_cancel_persist_ms=mm_fast_cancel_persist_ms,
@@ -936,12 +1179,40 @@ def run() -> None:
             decision_confirmation_updates=mm_decision_confirmation_updates,
             min_decision_interval_ms=mm_min_decision_interval_ms,
             decision_batch_ticks=mm_decision_batch_ticks,
+            entry_min_spread=mm_entry_min_spread,
+            entry_stability_window_ticks=mm_entry_stability_window_ticks,
+            entry_max_bid_ask_move_ticks=mm_entry_max_bid_ask_move_ticks,
+            entry_anti_trend_threshold=mm_entry_anti_trend_threshold,
+            entry_direction_window_ticks=mm_entry_direction_window_ticks,
+            entry_direction_min_move_ticks=mm_entry_direction_min_move_ticks,
+            trade_cooldown_ms=mm_trade_cooldown_ms,
+            entry_min_place_interval_ms=mm_entry_min_place_interval_ms,
+            entry_score_threshold=mm_entry_score_threshold,
+            entry_score_spread_threshold=mm_entry_score_spread_threshold,
+            entry_score_w_spread=mm_entry_score_w_spread,
+            entry_score_w_stability=mm_entry_score_w_stability,
+            entry_score_w_trend=mm_entry_score_w_trend,
+            entry_score_w_imbalance=mm_entry_score_w_imbalance,
+            entry_score_cooldown_penalty_max=mm_entry_score_cooldown_penalty_max,
+            adaptive_entry_learning_enabled=mm_adaptive_learning_enabled,
+            adaptive_entry_learning_window=mm_adaptive_learning_window,
+            adaptive_entry_learning_min_bin_trades=mm_adaptive_learning_min_bin_trades,
+            adaptive_entry_learning_step_up=mm_adaptive_learning_step_up,
+            adaptive_entry_learning_step_down=mm_adaptive_learning_step_down,
+            adaptive_entry_learning_max_step_per_update=mm_adaptive_learning_max_step_per_update,
+            adaptive_entry_learning_threshold_min=mm_adaptive_learning_threshold_min,
+            adaptive_entry_learning_threshold_max=mm_adaptive_learning_threshold_max,
+            adaptive_entry_learning_drift_alert=mm_adaptive_learning_drift_alert,
+            adaptive_entry_learning_perf_alert_delta=mm_adaptive_learning_perf_alert_delta,
             cancel_impact_horizon_ms=mm_cancel_impact_horizon_ms,
             cancel_reason_summary_every=mm_cancel_reason_summary_every,
+            disable_price_move_cancel=mm_disable_price_move_cancel,
+            cancel_analytics_sink=economics_store.insert_cancel_analytics,
+            entry_decision_sink=economics_store.insert_entry_decisions,
         )
         market_data_engine.subscribe(market_maker.on_market_data)
         logger.info(
-            "[MM] enabled symbol=%s lot=%s market=%s max_loss_per_trade=%s mm_vol_threshold=%s mm_vol_window=%s mm_vol_cancel=%s mm_rest_timeout_sec=%s mm_tick_size=%s mm_replace_ticks=%s mm_replace_cancel_ticks=%s mm_replace_keep_ticks=%s mm_adverse_cancel_ticks=%s mm_fast_cancel_keep_ticks=%s mm_fast_cancel_persist_ms=%s mm_tolerance_ticks=%s mm_tolerance_pct=%s mm_min_lifetime_ms=%s mm_replace_cooldown_ms=%s mm_trend_window=%s mm_trend_threshold=%s mm_trend_cancel=%s mm_post_fill_ms=%s mm_adverse_window=%s mm_adverse_rate_threshold=%s mm_defensive_offset_ticks=%s mm_confirm_updates=%s mm_min_decision_ms=%s mm_batch_ticks=%s mm_cancel_impact_ms=%s mm_cancel_summary_every=%s",
+            "[MM] enabled symbol=%s lot=%s market=%s max_loss_per_trade=%s mm_vol_threshold=%s mm_vol_window=%s mm_vol_cancel=%s mm_rest_timeout_sec=%s mm_tick_size=%s mm_replace_ticks=%s mm_replace_cancel_ticks=%s mm_replace_keep_ticks=%s mm_replace_persist_ms=%s mm_adverse_cancel_ticks=%s mm_fast_cancel_keep_ticks=%s mm_fast_cancel_persist_ms=%s mm_tolerance_ticks=%s mm_tolerance_pct=%s mm_min_lifetime_ms=%s mm_replace_cooldown_ms=%s mm_entry_min_spread=%s mm_entry_stability_window=%s mm_entry_max_move_ticks=%s mm_entry_anti_trend=%s mm_entry_direction_window=%s mm_entry_direction_min_move_ticks=%s mm_trade_cooldown_ms=%s mm_entry_min_interval_ms=%s mm_entry_score_threshold=%s mm_entry_score_spread_threshold=%s mm_entry_score_w_spread=%s mm_entry_score_w_stability=%s mm_entry_score_w_trend=%s mm_entry_score_w_imbalance=%s mm_entry_score_cooldown_penalty_max=%s mm_trend_window=%s mm_trend_threshold=%s mm_trend_cancel=%s mm_post_fill_ms=%s mm_adverse_window=%s mm_adverse_rate_threshold=%s mm_defensive_offset_ticks=%s mm_confirm_updates=%s mm_min_decision_ms=%s mm_batch_ticks=%s mm_cancel_impact_ms=%s mm_cancel_summary_every=%s mm_disable_price_move_cancel=%s",
             mm_symbol,
             mm_lot,
             mm_market.value,
@@ -954,6 +1225,7 @@ def run() -> None:
             mm_replace_threshold_ticks,
             mm_replace_cancel_threshold_ticks,
             mm_replace_keep_threshold_ticks,
+            mm_replace_persist_ms,
             mm_adverse_move_cancel_ticks,
             mm_fast_cancel_keep_ticks,
             mm_fast_cancel_persist_ms,
@@ -961,6 +1233,21 @@ def run() -> None:
             mm_price_tolerance_pct,
             mm_min_order_lifetime_ms,
             mm_cancel_replace_cooldown_ms,
+            mm_entry_min_spread,
+            mm_entry_stability_window_ticks,
+            mm_entry_max_bid_ask_move_ticks,
+            mm_entry_anti_trend_threshold,
+            mm_entry_direction_window_ticks,
+            mm_entry_direction_min_move_ticks,
+            mm_trade_cooldown_ms,
+            mm_entry_min_place_interval_ms,
+            mm_entry_score_threshold,
+            mm_entry_score_spread_threshold,
+            mm_entry_score_w_spread,
+            mm_entry_score_w_stability,
+            mm_entry_score_w_trend,
+            mm_entry_score_w_imbalance,
+            mm_entry_score_cooldown_penalty_max,
             mm_trend_window_ticks,
             mm_trend_strength_threshold,
             mm_cancel_on_strong_trend,
@@ -973,6 +1260,7 @@ def run() -> None:
             mm_decision_batch_ticks,
             mm_cancel_impact_horizon_ms,
             mm_cancel_reason_summary_every,
+            mm_disable_price_move_cancel,
         )
 
     try:
@@ -1000,6 +1288,14 @@ def run() -> None:
         "  topwinners [N]\n"
         "  worstslip [N]\n"
         "  pnlcomp\n"
+        "  fillquality\n"
+        "  lossanalysis\n"
+        "  analyticscounters\n"
+        "  backfillanalytics [N]\n"
+        "  analyticsmissing [N]\n"
+        "  entrycorr\n"
+        "  cancelimpact\n"
+        "  simprofile [REALISTIC|STRESS|EXTREME]\n"
         "  q"
     )
 
@@ -1187,6 +1483,69 @@ def run() -> None:
                 logger.info("worst_slippage_trades=%s", analytics_api.worst_slippage_trades(limit=limit))
             elif kind == "pnlcomp":
                 logger.info("pnl_by_component=%s", analytics_api.pnl_by_component())
+            elif kind == "fillquality":
+                logger.info("fill_quality_stats=%s", analytics_api.fill_quality_stats())
+            elif kind == "lossanalysis":
+                logger.info("trade_outcome_analysis=%s", analytics_api.trade_outcome_analysis())
+            elif kind == "analyticscounters":
+                logger.info(
+                    "analytics_counters=%s",
+                    {
+                        "total_trades_processed_for_analytics": analytics_counters[
+                            "total_trades_processed_for_analytics"
+                        ],
+                        "total_records_written": analytics_counters["total_records_written"],
+                    },
+                )
+            elif kind == "backfillanalytics":
+                limit = int(parts[1]) if len(parts) == 2 else 100
+                backfill_result = economics_store.backfill_trade_analytics(limit=limit)
+                logger.info("backfill_analytics_result=%s", backfill_result)
+            elif kind == "analyticsmissing":
+                limit = int(parts[1]) if len(parts) == 2 else 100
+                logger.info("analytics_missing_fills=%s", analytics_api.analytics_missing_fills(limit=limit))
+            elif kind == "entrycorr":
+                logger.info("entry_score_pnl_correlation=%s", analytics_api.entry_score_pnl_correlation())
+            elif kind == "cancelimpact":
+                logger.info("missed_pnl_by_cancel_reason=%s", analytics_api.missed_pnl_by_cancel_reason())
+            elif kind == "simprofile":
+                if len(parts) == 1:
+                    logger.info(
+                        "[SIM][PROFILE] active=%s config=%s",
+                        active_simulation_profile,
+                        gateway.simulation_config_snapshot(),
+                    )
+                    continue
+                if len(parts) != 2:
+                    logger.warning("Bad command format.")
+                    continue
+                if not simulation_mode:
+                    logger.warning("[SIM][PROFILE] ignored: SIMULATION_MODE is disabled")
+                    continue
+                requested_profile = normalize_simulation_profile(parts[1])
+                active_simulation_profile, runtime_params, _ = resolve_simulation_profile(
+                    base_params=simulation_stress_params,
+                    configured_profile=configured_simulation_profile,
+                    runtime_override_profile=requested_profile,
+                )
+                gateway.apply_simulation_config(
+                    simulation_slippage_bps=float(runtime_params["simulation_slippage_bps"]),
+                    simulation_slippage_max_bps=float(runtime_params["simulation_slippage_max_bps"]),
+                    simulation_volatility_slippage_multiplier=float(
+                        runtime_params["simulation_volatility_slippage_multiplier"]
+                    ),
+                    simulation_latency_network_ms=int(runtime_params["simulation_latency_network_ms"]),
+                    simulation_latency_exchange_ms=int(runtime_params["simulation_latency_exchange_ms"]),
+                    simulation_latency_jitter_ms=int(runtime_params["simulation_latency_jitter_ms"]),
+                    simulation_fill_participation=float(runtime_params["simulation_fill_participation"]),
+                    simulation_touch_fill_probability=float(runtime_params["simulation_touch_fill_probability"]),
+                    simulation_passive_fill_probability_scale=float(
+                        runtime_params["simulation_passive_fill_probability_scale"]
+                    ),
+                    simulation_adverse_selection_bias=float(runtime_params["simulation_adverse_selection_bias"]),
+                    profile_name=active_simulation_profile,
+                    source="runtime_command",
+                )
             else:
                 logger.warning("Bad command format.")
     except KeyboardInterrupt:

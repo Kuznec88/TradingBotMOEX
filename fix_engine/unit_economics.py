@@ -31,6 +31,7 @@ class _Lot:
     min_mid: Decimal = Decimal("0.00")
     max_mid: Decimal = Decimal("0.00")
     adverse_pnl: Decimal = Decimal("0.00")
+    entry_time_in_book_ms: Decimal = Decimal("0.00")
 
 
 @dataclass
@@ -79,6 +80,7 @@ class UnitEconomicsCalculator:
         fill_ts: datetime | None = None,
         cl_ord_id: str,
         exec_id: str,
+        time_in_book_ms: float = 0.0,
     ) -> dict[str, object] | None:
         qty = qty.quantize(QTY_Q, rounding=ROUND_HALF_UP)
         price = price.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
@@ -106,11 +108,13 @@ class UnitEconomicsCalculator:
         slippage_pnl = Decimal("0.00")
         holding_pnl = Decimal("0.00")
         adverse_pnl = Decimal("0.00")
+        closed_qty = Decimal("0.0000")
         remaining = qty
         trade_analytics_rows: list[dict[str, str]] = []
         round_trip_rows: list[dict[str, str | float]] = []
 
         fill_slippage_leg = self._leg_slippage_pnl(side=side, expected=expected, actual=price, qty=qty)
+        in_book_ms = _d(time_in_book_ms).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
 
         # If incoming fill closes opposite inventory, realize PnL.
         while remaining > 0 and state.side != 0 and state.side != fill_sign and state.lots:
@@ -137,6 +141,9 @@ class UnitEconomicsCalculator:
                 gross_leg = (lot.price - price) * matched
             else:
                 gross_leg = Decimal("0.00")
+            immediate_move = (
+                (price - lot.price) if state.side == 1 else (lot.price - price)
+            ).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
             gross += gross_leg
             slippage_leg = (entry_slippage_leg + exit_slippage_leg).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
             holding_leg = (gross_leg - spread_leg - slippage_leg).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
@@ -145,6 +152,7 @@ class UnitEconomicsCalculator:
             slippage_pnl += slippage_leg
             holding_pnl += holding_leg
             adverse_pnl += adverse_leg
+            closed_qty = (closed_qty + matched).quantize(QTY_Q, rounding=ROUND_HALF_UP)
             self._round_trip_seq += 1
             duration_ms = max(0.0, (fill_ts - lot.entry_ts).total_seconds() * 1000.0)
             mae, mfe = self._lot_mae_mfe(lot=lot, qty=matched, side=state.side)
@@ -159,30 +167,14 @@ class UnitEconomicsCalculator:
                     "total_pnl": str(gross_leg.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
                     "mae": str(mae),
                     "mfe": str(mfe),
+                    "immediate_move": str(immediate_move),
+                    "entry_price": str(lot.price),
+                    "exit_price": str(price),
+                    "entry_spread": str((lot.ask - lot.bid).quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
+                    "entry_volatility_regime": self._volatility_regime(lot.mid_price, lot.bid, lot.ask),
+                    "entry_time_in_book_ms": str(lot.entry_time_in_book_ms.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
                     "entry_ts": lot.entry_ts.isoformat(),
                     "exit_ts": fill_ts.isoformat(),
-                }
-            )
-            trade_analytics_rows.append(
-                {
-                    "trade_id": exec_id,
-                    "order_id": cl_ord_id,
-                    "symbol": symbol,
-                    "side": side,
-                    "gross_pnl": str(gross_leg.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
-                    "net_pnl": str((gross_leg - (fees * (matched / qty))).quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
-                    "fees": str((fees * (matched / qty)).quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
-                    "slippage": str(slippage_leg),
-                    "spread_pnl": str(spread_leg),
-                    "adverse_pnl": str(adverse_leg),
-                    "holding_pnl": str(holding_leg),
-                    "expected_price": str(expected),
-                    "actual_price": str(price),
-                    "volatility_regime": self._volatility_regime(mid_px, bid_px, ask_px),
-                    "spread_bucket": self._spread_bucket((ask_px - bid_px)),
-                    "hour_bucket": str(fill_ts.hour),
-                    "is_adverse_fill": "1" if adverse_leg < 0 else "0",
-                    "created_at": fill_ts.isoformat(),
                 }
             )
 
@@ -208,11 +200,19 @@ class UnitEconomicsCalculator:
                     entry_slippage_pnl=entry_slip,
                     min_mid=mid_px,
                     max_mid=mid_px,
+                    entry_time_in_book_ms=in_book_ms,
                 )
             )
             state.side = fill_sign
         elif not state.lots:
             state.side = 0
+
+        opened_qty = (qty - closed_qty).quantize(QTY_Q, rounding=ROUND_HALF_UP)
+        fill_role = "OPEN"
+        if closed_qty > 0 and opened_qty > 0:
+            fill_role = "MIXED"
+        elif closed_qty > 0:
+            fill_role = "CLOSE"
 
         gross = gross.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
         net = (gross - fees).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
@@ -220,6 +220,29 @@ class UnitEconomicsCalculator:
         slippage_pnl = slippage_pnl.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
         holding_pnl = holding_pnl.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
         adverse_pnl = adverse_pnl.quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+        trade_analytics_rows.append(
+            {
+                "trade_id": exec_id,
+                "order_id": cl_ord_id,
+                "symbol": symbol,
+                "side": side,
+                "gross_pnl": str(gross),
+                "net_pnl": str(net),
+                "fees": str(fees),
+                "slippage": str(fill_slippage_leg.quantize(MONEY_Q, rounding=ROUND_HALF_UP)),
+                "spread_pnl": str(spread_pnl),
+                "adverse_pnl": str(adverse_pnl),
+                "holding_pnl": str(holding_pnl),
+                "expected_price": str(expected),
+                "actual_price": str(price),
+                "volatility_regime": self._volatility_regime(mid_px, bid_px, ask_px),
+                "spread_bucket": self._spread_bucket((ask_px - bid_px)),
+                "hour_bucket": str(fill_ts.hour),
+                "is_adverse_fill": "1" if adverse_pnl < 0 else "0",
+                "time_in_book_ms": str(in_book_ms),
+                "created_at": fill_ts.isoformat(),
+            }
+        )
 
         return {
             "market": market.value,
@@ -238,6 +261,9 @@ class UnitEconomicsCalculator:
             "spread_pnl": str(spread_pnl),
             "adverse_pnl": str(adverse_pnl),
             "holding_pnl": str(holding_pnl),
+            "fill_role": fill_role,
+            "closed_qty": str(closed_qty),
+            "opened_qty": str(opened_qty),
             "trade_analytics_rows": trade_analytics_rows,
             "round_trip_rows": round_trip_rows,
             "fill_ts": fill_ts.isoformat(),

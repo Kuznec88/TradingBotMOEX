@@ -36,3 +36,21 @@ class TradingAnalyticsAPI:
 
     def adverse_fill_stats(self) -> dict[str, float]:
         return self._store.adverse_fill_stats()
+
+    def fill_quality_stats(self) -> dict[str, float]:
+        return self._store.fill_quality_stats()
+
+    def trade_outcome_analysis(self) -> dict[str, object]:
+        return self._store.trade_outcome_analysis()
+
+    def missed_pnl_by_cancel_reason(self) -> list[dict[str, float | int | str]]:
+        return self._store.missed_pnl_by_cancel_reason()
+
+    def entry_decisions_by_side(self) -> list[dict[str, float | int | str]]:
+        return self._store.entry_decisions_by_side()
+
+    def analytics_missing_fills(self, limit: int = 500) -> list[dict[str, object]]:
+        return self._store.analytics_missing_fills(limit=limit)
+
+    def entry_score_pnl_correlation(self) -> dict[str, float]:
+        return self._store.entry_score_pnl_correlation()
