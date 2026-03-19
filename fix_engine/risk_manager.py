@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from threading import RLock
 
 from order_manager import OrderManager
@@ -31,6 +32,7 @@ class RiskManager:
         trades_window_seconds: int,
         cooldown_after_consecutive_losses: int,
         cooldown_seconds: int,
+        logger: logging.Logger | None = None,
     ) -> None:
         self._order_manager = order_manager
         self._max_exposure = float(max_exposure_per_instrument)
@@ -38,6 +40,7 @@ class RiskManager:
         self._window_sec = int(trades_window_seconds)
         self._cooldown_after_losses = int(cooldown_after_consecutive_losses)
         self._cooldown_sec = int(cooldown_seconds)
+        self._logger = logger
 
         self._lock = RLock()
         self._trade_timestamps: deque[datetime] = deque()
@@ -51,6 +54,14 @@ class RiskManager:
 
         with self._lock:
             if self._cooldown_until and now < self._cooldown_until:
+                self._log_risk_event(
+                    "risk_reject",
+                    reason="cooldown_active",
+                    symbol=symbol,
+                    market=market.value,
+                    qty=qty,
+                    limit=self._cooldown_sec,
+                )
                 return RiskDecision(
                     allowed=False,
                     reason=f"cooldown_active_until={self._cooldown_until.isoformat()}",
@@ -58,6 +69,15 @@ class RiskManager:
 
             self._evict_old_trades(now)
             if self._max_trades > 0 and len(self._trade_timestamps) >= self._max_trades:
+                self._log_risk_event(
+                    "risk_reject",
+                    reason="max_trades_window_exceeded",
+                    symbol=symbol,
+                    market=market.value,
+                    qty=qty,
+                    current_exposure=len(self._trade_timestamps),
+                    limit=self._max_trades,
+                )
                 return RiskDecision(
                     allowed=False,
                     reason=f"max_trades_window_exceeded market={market.value} "
@@ -69,6 +89,15 @@ class RiskManager:
             open_qty_same_symbol = sum(abs(o.remaining_qty) for o in open_orders if o.symbol.upper() == symbol)
             projected_exposure = current_position + open_qty_same_symbol + qty
             if self._max_exposure > 0 and projected_exposure > self._max_exposure:
+                self._log_risk_event(
+                    "exposure_limit_hit",
+                    reason="max_exposure_exceeded",
+                    symbol=symbol,
+                    market=market.value,
+                    qty=qty,
+                    current_exposure=projected_exposure,
+                    limit=self._max_exposure,
+                )
                 return RiskDecision(
                     allowed=False,
                     reason=(
@@ -91,8 +120,27 @@ class RiskManager:
                 self._consecutive_losses += 1
                 if self._cooldown_after_losses > 0 and self._consecutive_losses >= self._cooldown_after_losses:
                     self._cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=self._cooldown_sec)
+                    self._log_risk_event(
+                        "kill_switch_triggered",
+                        reason="cooldown_after_consecutive_losses",
+                        current_exposure=self._consecutive_losses,
+                        limit=self._cooldown_after_losses,
+                    )
             elif net_pnl > 0:
                 self._consecutive_losses = 0
+
+    def _log_risk_event(self, event: str, **fields: object) -> None:
+        if self._logger is None:
+            return
+        self._logger.warning(
+            event,
+            extra={
+                "component": "RiskManager",
+                "event": event,
+                "correlation_id": "",
+                **fields,
+            },
+        )
 
     def _evict_old_trades(self, now: datetime) -> None:
         if self._window_sec <= 0:

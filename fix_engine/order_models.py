@@ -14,6 +14,8 @@ class OrderRequest:
     symbol: str
     side: str | int
     qty: float
+    account: str
     price: float | None = None
     market: MarketType = MarketType.EQUITIES
     lot_size: int = 1
+    bypass_risk: bool = False

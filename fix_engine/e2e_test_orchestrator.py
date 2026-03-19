@@ -4,14 +4,106 @@ import json
 import logging
 import random
 import sqlite3
+import sys
 import time
+import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
 
-import quickfix as fix
+try:
+    import quickfix as fix
+except ModuleNotFoundError:
+    class _Field:
+        TAG = 0
+
+        def __init__(self, value: object) -> None:
+            self.value = value
+
+        @property
+        def tag(self) -> int:
+            return int(self.TAG)
+
+    class _Header:
+        def __init__(self) -> None:
+            self._fields: dict[int, str] = {}
+
+        def setField(self, field: object) -> None:
+            tag = int(getattr(field, "tag", 0))
+            value = str(getattr(field, "value", ""))
+            self._fields[tag] = value
+
+    class _Message:
+        def __init__(self) -> None:
+            self._header = _Header()
+            self._fields: dict[int, str] = {}
+
+        def getHeader(self) -> _Header:
+            return self._header
+
+        def setField(self, field: object) -> None:
+            tag = int(getattr(field, "tag", 0))
+            value = str(getattr(field, "value", ""))
+            self._fields[tag] = value
+
+        def isSetField(self, tag: int) -> bool:
+            return int(tag) in self._fields
+
+        def getField(self, tag: int) -> str:
+            return self._fields.get(int(tag), "")
+
+        def toString(self) -> str:
+            parts = [f"{k}={v}" for k, v in sorted(self._fields.items())]
+            return "|".join(parts)
+
+    def _mk_field(tag: int):
+        return type(f"Field{tag}", (_Field,), {"TAG": int(tag)})
+
+    _fix = types.ModuleType("quickfix")
+    _fix.MsgType_ExecutionReport = "8"
+    _fix.Message = _Message
+    _fix.MsgType = _mk_field(35)
+    _fix.ClOrdID = _mk_field(11)
+    _fix.ExecID = _mk_field(17)
+    _fix.OrderID = _mk_field(37)
+    _fix.Symbol = _mk_field(55)
+    _fix.Side = _mk_field(54)
+    _fix.OrderQty = _mk_field(38)
+    _fix.CumQty = _mk_field(14)
+    _fix.LeavesQty = _mk_field(151)
+    _fix.AvgPx = _mk_field(6)
+    _fix.LastQty = _mk_field(32)
+    _fix.LastPx = _mk_field(31)
+    _fix.Text = _mk_field(58)
+
+    class _StringField(_Field):
+        TAG = 0
+
+        def __init__(self, tag: int, value: object) -> None:
+            self.TAG = int(tag)
+            super().__init__(value)
+
+    _fix.StringField = _StringField
+    sys.modules["quickfix"] = _fix
+    _fix44 = types.ModuleType("quickfix44")
+
+    class _DummyMsg:
+        def __init__(self) -> None:
+            self._fields: list[object] = []
+            self._groups: list[object] = []
+
+        def setField(self, field: object) -> None:
+            self._fields.append(field)
+
+        def addGroup(self, group: object) -> None:
+            self._groups.append(group)
+
+    _fix44.NewOrderSingle = _DummyMsg
+    _fix44.OrderCancelRequest = _DummyMsg
+    sys.modules["quickfix44"] = _fix44
+    import quickfix as fix
 
 from analytics_api import TradingAnalyticsAPI
 from economics_store import EconomicsStore
@@ -28,7 +120,14 @@ from unit_economics import UnitEconomicsCalculator
 
 
 class _NoopExecutionEngine:
-    def send_order(self, symbol: str, side: str | int, qty: float, price: float | None = None) -> str:
+    def send_order(
+        self,
+        symbol: str,
+        side: str | int,
+        qty: float,
+        account: str | None = None,
+        price: float | None = None,
+    ) -> str:
         raise RuntimeError("Unexpected FIX path: simulation mode must handle orders")
 
     def cancel_order(self, cl_ord_id: str) -> str:
@@ -44,10 +143,16 @@ class E2EConfig:
     base_price: float = 250.0
     base_spread: float = 0.04
     lot_size: float = 1.0
-    simulation_slippage_bps: float = 2.0
+    simulation_slippage_bps: float = 3.0
+    simulation_slippage_max_bps: float = 30.0
+    simulation_volatility_slippage_multiplier: float = 2.0
     simulation_latency_network_ms: int = 120
     simulation_latency_exchange_ms: int = 180
+    simulation_latency_jitter_ms: int = 60
     simulation_fill_participation: float = 0.25
+    simulation_touch_fill_probability: float = 0.12
+    simulation_passive_fill_probability_scale: float = 0.45
+    simulation_adverse_selection_bias: float = 0.45
     volatility_spike_every: int = 25
     volatility_spike_size: float = 1.20
     max_exposure_per_instrument: float = 6.0
@@ -55,7 +160,36 @@ class E2EConfig:
     trades_window_seconds: int = 60
     cooldown_after_consecutive_losses: int = 1000
     cooldown_seconds: int = 5
+    max_loss_per_trade: float = 0.0
+    mm_volatility_window_ticks: int = 20
+    mm_max_short_term_volatility: float = 0.0
+    mm_cancel_on_high_volatility: bool = True
+    mm_resting_order_timeout_sec: float = 2.0
+    mm_tick_size: float = 0.01
+    mm_replace_threshold_ticks: int = 2
+    mm_replace_cancel_threshold_ticks: float = 2.0
+    mm_replace_keep_threshold_ticks: float = 1.0
+    mm_adverse_move_cancel_ticks: int = 3
+    mm_fast_cancel_keep_ticks: float = 1.5
+    mm_fast_cancel_persist_ms: int = 180
+    mm_price_tolerance_ticks: float = 0.0
+    mm_price_tolerance_pct: float = 0.0
+    mm_min_order_lifetime_ms: int = 150
+    mm_cancel_replace_cooldown_ms: int = 120
+    mm_trend_window_ticks: int = 12
+    mm_trend_strength_threshold: float = 0.0
+    mm_cancel_on_strong_trend: bool = False
+    mm_post_fill_horizon_ms: int = 200
+    mm_adverse_fill_window: int = 25
+    mm_adverse_fill_rate_threshold: float = 0.65
+    mm_defensive_quote_offset_ticks: int = 1
+    mm_decision_confirmation_updates: int = 2
+    mm_min_decision_interval_ms: int = 150
+    mm_decision_batch_ticks: int = 3
+    mm_cancel_impact_horizon_ms: int = 500
+    mm_cancel_reason_summary_every: int = 20
     max_abs_inventory_per_symbol: float = 4.0
+    soft_abs_inventory_per_symbol: float = 3.2
     failure_action: str = "ALERT"
     max_market_data_staleness_sec: int = 3
     max_order_stuck_sec: int = 3
@@ -303,7 +437,11 @@ class TestOrchestrator:
             fee_bps_by_market={
                 MarketType.EQUITIES: Decimal("0.00"),
                 MarketType.FORTS: Decimal("0.00"),
-            }
+            },
+            fixed_fee_by_market={
+                MarketType.EQUITIES: Decimal("0.00"),
+                MarketType.FORTS: Decimal("0.00"),
+            },
         )
         self.risk_manager = RiskManager(
             order_manager=self.order_manager,
@@ -316,6 +454,7 @@ class TestOrchestrator:
         self.position_manager = PositionManager(
             order_manager=self.order_manager,
             max_abs_inventory_per_symbol=config.max_abs_inventory_per_symbol,
+            soft_abs_inventory_per_symbol=config.soft_abs_inventory_per_symbol,
         )
         self.gateway = ExecutionGateway(
             equities_engine=_NoopExecutionEngine(),  # type: ignore[arg-type]
@@ -326,11 +465,22 @@ class TestOrchestrator:
             get_latest_market_data=self.market_data_engine.get_latest,
             on_execution_report=self._on_execution_report,
             risk_manager=self.risk_manager,
+            position_manager=self.position_manager,
             simulation_slippage_bps=config.simulation_slippage_bps,
+            simulation_slippage_max_bps=config.simulation_slippage_max_bps,
+            simulation_volatility_slippage_multiplier=config.simulation_volatility_slippage_multiplier,
             simulation_latency_network_ms=config.simulation_latency_network_ms,
             simulation_latency_exchange_ms=config.simulation_latency_exchange_ms,
+            simulation_latency_jitter_ms=config.simulation_latency_jitter_ms,
             simulation_fill_participation=config.simulation_fill_participation,
+            simulation_touch_fill_probability=config.simulation_touch_fill_probability,
+            simulation_passive_fill_probability_scale=config.simulation_passive_fill_probability_scale,
+            simulation_adverse_selection_bias=config.simulation_adverse_selection_bias,
             simulation_rng=random.Random(config.seed),
+            account_by_market={
+                MarketType.EQUITIES: "SIM-EQ-ACCOUNT",
+                MarketType.FORTS: "SIM-FO-ACCOUNT",
+            },
         )
         self.market_maker = BasicMarketMaker(
             symbol=config.symbol,
@@ -339,6 +489,34 @@ class TestOrchestrator:
             gateway=self.gateway,
             position_manager=self.position_manager,
             logger=logger,
+            max_loss_per_trade=config.max_loss_per_trade,
+            volatility_window_ticks=config.mm_volatility_window_ticks,
+            max_short_term_volatility=config.mm_max_short_term_volatility,
+            cancel_on_high_volatility=config.mm_cancel_on_high_volatility,
+            resting_order_timeout_sec=config.mm_resting_order_timeout_sec,
+            tick_size=config.mm_tick_size,
+            replace_threshold_ticks=config.mm_replace_threshold_ticks,
+            replace_cancel_threshold_ticks=config.mm_replace_cancel_threshold_ticks,
+            replace_keep_threshold_ticks=config.mm_replace_keep_threshold_ticks,
+            adverse_move_cancel_ticks=config.mm_adverse_move_cancel_ticks,
+            fast_cancel_keep_ticks=config.mm_fast_cancel_keep_ticks,
+            fast_cancel_persist_ms=config.mm_fast_cancel_persist_ms,
+            price_tolerance_ticks=config.mm_price_tolerance_ticks,
+            price_tolerance_pct=config.mm_price_tolerance_pct,
+            min_order_lifetime_ms=config.mm_min_order_lifetime_ms,
+            cancel_replace_cooldown_ms=config.mm_cancel_replace_cooldown_ms,
+            trend_window_ticks=config.mm_trend_window_ticks,
+            trend_strength_threshold=config.mm_trend_strength_threshold,
+            cancel_on_strong_trend=config.mm_cancel_on_strong_trend,
+            post_fill_horizon_ms=config.mm_post_fill_horizon_ms,
+            adverse_fill_window=config.mm_adverse_fill_window,
+            adverse_fill_rate_threshold=config.mm_adverse_fill_rate_threshold,
+            defensive_quote_offset_ticks=config.mm_defensive_quote_offset_ticks,
+            decision_confirmation_updates=config.mm_decision_confirmation_updates,
+            min_decision_interval_ms=config.mm_min_decision_interval_ms,
+            decision_batch_ticks=config.mm_decision_batch_ticks,
+            cancel_impact_horizon_ms=config.mm_cancel_impact_horizon_ms,
+            cancel_reason_summary_every=config.mm_cancel_reason_summary_every,
         )
         self.failure_monitor = FailureMonitor(
             logger=logger,
@@ -408,6 +586,7 @@ class TestOrchestrator:
             self._anomalies.append(f"bad_exec_report:{state['error']}")
             self.logger.error("[E2E][ANOMALY] %s", self._anomalies[-1])
             return
+        self.market_maker.on_execution_report(state)
 
         cl_ord_id = state.get("cl_ord_id", "")
         old = state.get("status_old", "")
@@ -512,12 +691,18 @@ class TestOrchestrator:
         metrics = self.analytics_api.get_metrics()
         last_md = self.market_data_engine.get_latest(self.cfg.symbol)
         unrealized_pnl = self.pnl_tracker.unrealized_pnl(last_md.mid_price) if last_md else 0.0
+        net_equity_pnl = float(metrics["total_pnl"]) + float(unrealized_pnl)
 
         result = {
             "session_start": start_ts.isoformat(),
             "session_end": end_ts.isoformat(),
             "duration_sec": round((end_ts - start_ts).total_seconds(), 3),
             "total_trades": int(metrics["total_trades"]),
+            "successful_trades": int(metrics["successful_trades"]),
+            "failed_trades": int(metrics["failed_trades"]),
+            "success_rate_pct": float(metrics["win_rate"]),
+            "failed_rate_pct": float(metrics["fail_rate"]),
+            "success_to_failure_ratio": float(metrics["success_to_failure_ratio"]),
             "total_pnl": float(metrics["total_pnl"]),
             "avg_pnl_per_trade": float(metrics["avg_pnl_per_trade"]),
             "win_rate": float(metrics["win_rate"]),
@@ -528,6 +713,7 @@ class TestOrchestrator:
             "avg_price": round(self.pnl_tracker.avg_price, 6),
             "realized_pnl": round(self.pnl_tracker.realized_pnl, 6),
             "unrealized_pnl": round(unrealized_pnl, 6),
+            "net_equity_pnl": round(net_equity_pnl, 6),
             "persistence_counts": self.validation_store.counts(),
             "anomalies": {
                 "illegal_transitions": self._illegal_transitions,

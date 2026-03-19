@@ -56,7 +56,14 @@ class FailureMonitor:
             self._running = True
             self._thread = threading.Thread(target=self._run, name="failure-monitor", daemon=True)
             self._thread.start()
-            self.logger.info("[FAILURE_MONITOR] started")
+            self.logger.info(
+                "failure_monitor_started",
+                extra={
+                    "component": "FailureMonitor",
+                    "event": "failure_monitor_started",
+                    "correlation_id": "",
+                },
+            )
 
     def stop(self) -> None:
         with self._lock:
@@ -65,7 +72,14 @@ class FailureMonitor:
             self._thread = None
         if thread is not None:
             thread.join(timeout=2.0)
-        self.logger.info("[FAILURE_MONITOR] stopped")
+        self.logger.info(
+            "failure_monitor_stopped",
+            extra={
+                "component": "FailureMonitor",
+                "event": "failure_monitor_stopped",
+                "correlation_id": "",
+            },
+        )
 
     def on_market_data(self, data: MarketData) -> None:
         if data.symbol.upper() != self.watch_symbol:
@@ -132,6 +146,24 @@ class FailureMonitor:
             return
         self._last_alert_at[key] = now_monotonic
 
-        self.logger.error("[ANOMALY] type=%s details=%s", key, message)
+        self.logger.error(
+            "anomaly_detected",
+            extra={
+                "component": "FailureMonitor",
+                "event": "anomaly_detected",
+                "correlation_id": "",
+                "anomaly_type": key,
+                "details": message,
+            },
+        )
         if self.action_on_anomaly == "STOP":
+            self.logger.critical(
+                "kill_switch_triggered",
+                extra={
+                    "component": "FailureMonitor",
+                    "event": "kill_switch_triggered",
+                    "correlation_id": "",
+                    "reason": f"anomaly:{key}",
+                },
+            )
             self.gateway.set_trading_enabled(False, reason=f"anomaly:{key}")

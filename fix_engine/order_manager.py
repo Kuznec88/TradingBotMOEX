@@ -14,6 +14,7 @@ class ManagedOrder:
     symbol: str
     side: str
     qty: float
+    account: str
     price: float | None
     status: str
     filled_qty: float
@@ -44,6 +45,7 @@ class OrderManager:
         symbol: str,
         side: str | int,
         qty: float,
+        account: str,
         price: float | None = None,
     ) -> ManagedOrder:
         with self._lock:
@@ -52,11 +54,15 @@ class OrderManager:
                 cl_ord_id = self.next_cl_ord_id()
 
             side_value = self._normalize_side(side)
+            account_value = str(account).strip()
+            if not account_value:
+                raise ValueError("Order account must not be empty.")
             order = ManagedOrder(
                 cl_ord_id=cl_ord_id,
                 symbol=symbol,
                 side=side_value,
                 qty=float(qty),
+                account=account_value,
                 price=float(price) if price is not None else None,
                 status="NEW",
                 filled_qty=0.0,
@@ -82,6 +88,7 @@ class OrderManager:
                     symbol=self._safe_get(message, 55),
                     side=side,
                     qty=qty,
+                    account=self._safe_get(message, 1),
                     price=self._to_float_or_none(self._safe_get(message, 44)),
                     status="NEW",
                     filled_qty=0.0,

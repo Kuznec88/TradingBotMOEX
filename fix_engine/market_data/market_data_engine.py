@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from threading import RLock
 from typing import Callable
@@ -21,6 +22,10 @@ class MarketDataEngine:
         self._lock = RLock()
         self._latest: dict[str, MarketData] = {}
         self._subscribers: list[Callable[[MarketData], None]] = []
+        self._snapshot_interval_sec = 5.0
+        self._last_snapshot_log_ts: dict[str, float] = {}
+        self._last_mid_by_symbol: dict[str, float] = {}
+        self._spike_threshold = 0.01
 
     def subscribe(self, callback: Callable[[MarketData], None]) -> None:
         with self._lock:
@@ -42,17 +47,52 @@ class MarketDataEngine:
             subscribers = list(self._subscribers)
 
         if self._logger is not None:
-            self._logger.info(
-                "[MARKET] %s bid=%s ask=%s mid=%s spread=%s",
-                data.symbol,
-                data.bid,
-                data.ask,
-                round(data.mid_price, 6),
-                round(data.spread, 6),
-            )
+            self._log_market_data(data)
 
         for callback in subscribers:
             callback(data)
+
+    def _log_market_data(self, data: MarketData) -> None:
+        now = time.monotonic()
+        symbol = data.symbol
+        last_log = self._last_snapshot_log_ts.get(symbol, 0.0)
+        should_snapshot = (now - last_log) >= self._snapshot_interval_sec
+        prev_mid = self._last_mid_by_symbol.get(symbol)
+        self._last_mid_by_symbol[symbol] = float(data.mid_price)
+        if prev_mid and prev_mid > 0:
+            jump = abs(float(data.mid_price) - prev_mid) / prev_mid
+            if jump >= self._spike_threshold:
+                self._logger.warning(
+                    "market_data_spike",
+                    extra={
+                        "component": "MarketDataEngine",
+                        "event": "market_data_spike",
+                        "correlation_id": "",
+                        "symbol": symbol,
+                        "bid": float(data.bid),
+                        "ask": float(data.ask),
+                        "spread": float(data.spread),
+                        "last_price": float(data.last),
+                        "mid_price": float(data.mid_price),
+                        "jump_ratio": jump,
+                    },
+                )
+        if should_snapshot:
+            self._last_snapshot_log_ts[symbol] = now
+            self._logger.info(
+                "market_data_snapshot",
+                extra={
+                    "component": "MarketDataEngine",
+                    "event": "market_data_snapshot",
+                    "correlation_id": "",
+                    "symbol": symbol,
+                    "bid": float(data.bid),
+                    "ask": float(data.ask),
+                    "spread": float(data.spread),
+                    "last_price": float(data.last),
+                    "mid_price": float(data.mid_price),
+                },
+            )
 
     @staticmethod
     def _normalize(raw_data: dict[str, object]) -> MarketData:
