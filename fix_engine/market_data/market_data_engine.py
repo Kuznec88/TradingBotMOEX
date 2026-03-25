@@ -7,6 +7,7 @@ from threading import RLock
 from typing import Callable
 
 from market_data.models import MarketData
+from structured_logging import log_event
 
 
 class MarketDataEngine:
@@ -26,6 +27,8 @@ class MarketDataEngine:
         self._last_snapshot_log_ts: dict[str, float] = {}
         self._last_mid_by_symbol: dict[str, float] = {}
         self._spike_threshold = 0.01
+        self._md_tick_count = 0
+        self._last_md_monotonic: float | None = None
 
     def subscribe(self, callback: Callable[[MarketData], None]) -> None:
         with self._lock:
@@ -35,8 +38,28 @@ class MarketDataEngine:
         data = self._normalize(raw_data)
         with self._lock:
             self._latest[data.symbol] = data
+            self._md_tick_count += 1
+            self._last_md_monotonic = time.monotonic()
         self.notify_subscribers(data)
         return data
+
+    def get_health_metrics(self) -> dict[str, float | int | bool]:
+        """Counters for MD health logging (thread-safe snapshot)."""
+        with self._lock:
+            tick_count = self._md_tick_count
+            last_mono = self._last_md_monotonic
+        now = time.monotonic()
+        if last_mono is None:
+            return {
+                "tick_count": tick_count,
+                "time_since_last_update_ms": 999999.0,
+                "no_data": tick_count == 0,
+            }
+        return {
+            "tick_count": tick_count,
+            "time_since_last_update_ms": max(0.0, (now - last_mono) * 1000.0),
+            "no_data": False,
+        }
 
     def get_latest(self, symbol: str) -> MarketData | None:
         with self._lock:
@@ -48,6 +71,19 @@ class MarketDataEngine:
 
         if self._logger is not None:
             self._log_market_data(data)
+            tot = float(data.bid_size) + float(data.ask_size) + 1e-12
+            imbalance = (float(data.bid_size) - float(data.ask_size)) / tot
+            log_event(
+                self._logger,
+                level=logging.INFO,
+                component="MarketData",
+                event="MD_UPDATE",
+                symbol=data.symbol,
+                bid=float(data.bid),
+                ask=float(data.ask),
+                spread=float(data.spread),
+                imbalance=float(imbalance),
+            )
 
         for callback in subscribers:
             callback(data)
@@ -105,6 +141,8 @@ class MarketDataEngine:
         last_raw = raw_data.get("last")
         last = float(last_raw) if last_raw is not None else (bid + ask) / 2
         volume = float(raw_data.get("volume", 0.0))
+        bid_size = float(raw_data.get("bid_size", 0.0))
+        ask_size = float(raw_data.get("ask_size", 0.0))
 
         timestamp_raw = raw_data.get("timestamp")
         if isinstance(timestamp_raw, datetime):
@@ -121,4 +159,6 @@ class MarketDataEngine:
             last=last,
             volume=volume,
             timestamp=ts,
+            bid_size=bid_size,
+            ask_size=ask_size,
         )

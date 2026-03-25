@@ -1,2 +1,2 @@
-"""MOEX FIX engine package."""
+"""T-Invest sandbox market data + paper trading runtime."""
 

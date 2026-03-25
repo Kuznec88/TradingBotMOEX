@@ -1,45 +1,46 @@
 # TradingBotMOEX
 
-Актуальный проектный контур: `fix_engine` (TRADE + DROP_COPY).
+Рабочий контур: `fix_engine` — **рынок через T‑Invest API (sandbox)**, исполнение **paper** (без реальных заявок на биржу).
 
 ## Запуск
 
-Из корня проекта:
+1. Установить зависимости: `pip install -r requirements.txt`
+2. В `fix_engine/settings.cfg` задать `DataProvider=TINKOFF_SANDBOX` и при необходимости `TBankInstrumentId`, `TBankSymbol`.
+3. Токен sandbox (предпочтительно через env):
 
 ```powershell
+$env:TINKOFF_SANDBOX_TOKEN = "<токен>"
 python main.py
 ```
 
-Альтернатива (то же самое):
+Или из каталога `fix_engine`:
 
 ```powershell
-cd "C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine"
+cd fix_engine
 python main.py
 ```
 
 ## Что делает раннер
 
-- поднимает 2 FIX-сессии:
-  - `TRADE` (`IFIX-EQ-UAT`)
-  - `DROP_COPY` (`IFIX-DC-EQ-UAT`)
-- маршрутизирует сообщения по типу сессии
-- ведет трекинг ордеров через `OrderManager`
-- принимает market data в `MarketDataEngine`
+- стримит котировки с **T‑Bank sandbox** (`tbank_sandbox_feed`) в `MarketDataEngine`;
+- стратегия и (опционально) market making работают на тех же данных;
+- исполнение — локальная симуляция / paper (`ExecutionGateway`), без маршрутизации на биржу.
 
 ## Команды в консоли
 
-- `m SYMBOL SIDE QTY` — Market order  
-  Пример: `m SBER 1 10`
-- `l SYMBOL SIDE QTY PRICE` — Limit order  
-  Пример: `l SBER 2 5 317.25`
-- `c CL_ORD_ID` — Cancel order
-- `sig LAST_PRICE SYMBOL QTY` — прогнать сигнал стратегии по цене
-- `md SYMBOL BID ASK LAST VOLUME [QTY]` — вручную подать market data
-- `pos SYMBOL` — показать позицию
-- `open` — показать открытые ордера
+(если включён интерактив в раннере)
+
+- `m SYMBOL SIDE QTY` — market order (paper)
+- `l SYMBOL SIDE QTY PRICE` — limit order (paper)
+- `c CL_ORD_ID` — отмена
+- `sig LAST_PRICE SYMBOL QTY` — прогон сигнала по цене
+- `md SYMBOL BID ASK LAST VOLUME [QTY]` — ручной market data
+- `pos SYMBOL` — позиция
+- `open` — открытые ордера
 - `q` — выход
 
-## Логи
+## Логи и артефакты
 
-- QuickFIX file logs: `fix_engine/log/`
-- App logs: `fix_engine/log/fix_client.log`
+- структурированные логи приложения: каталог `fix_engine/log/` (создаётся при старте);
+- `trade_economics.db` — локальная SQLite-экономика; в `.gitignore`;
+- старые FIX session-файлы в `fix_engine/store/` не используются при `TINKOFF_SANDBOX` — каталог можно не коммитить.

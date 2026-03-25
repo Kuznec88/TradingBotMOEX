@@ -1,0 +1,67 @@
+{
+  "updated_ts": "2026-03-24T18:47:10.800426+00:00",
+  "target_roi_abs": 0.08,
+  "max_adverse_abs": 0.02,
+  "max_hold_duration_ms": 1912500.0,
+  "buy_weight_tertile": [
+    1.477455443789063,
+    1.477455443789063,
+    1.477455443789063
+  ],
+  "sell_weight_tertile": [
+    1.477455443789063,
+    1.477455443789063,
+    1.477455443789063
+  ],
+  "version": 9,
+  "last_learning_effects": {
+    "inputs": {
+      "win_rate": 0.06,
+      "avg_pnl": -5.345,
+      "adverse_rate": 0.94,
+      "avg_mfe": 0.05,
+      "avg_mae": 0.14,
+      "avg_latency_ms": 769.3936,
+      "avg_spread": 1.94
+    },
+    "deltas": {
+      "target_roi_abs_toward_TARGET_MFE": 0.0015,
+      "max_adverse_abs_vs_TARGET_MAE": -0.0016,
+      "max_hold_duration_ms_factors": {
+        "latency": 0.75,
+        "spread": 0.85,
+        "cap_ms": 3000000.0
+      }
+    },
+    "targets_ref": {
+      "TARGET_WIN_RATE": 0.65,
+      "TARGET_AVG_PNL": 0.005,
+      "MAX_ADVERSE_RATE": 0.15,
+      "TARGET_MFE": 0.08,
+      "TARGET_MAE": 0.02,
+      "TARGET_ROI_ABS": 0.08,
+      "MAX_ADVERSE_ABS": 0.02,
+      "MAX_HOLD_DURATION_MS": 3000000.0,
+      "TRAILING_STOP_PCT": 0.04,
+      "LEARNING_LATENCY_REF_MS": 80.0,
+      "LEARNING_SPREAD_REF": 0.03,
+      "LEARNING_WIN_RATE_FLOOR_RATIO": 0.85
+    },
+    "new_state": {
+      "target_roi_abs": 0.08,
+      "max_adverse_abs": 0.02,
+      "max_hold_duration_ms": 1912500.0,
+      "buy_weight_tertile": [
+        1.477455443789063,
+        1.477455443789063,
+        1.477455443789063
+      ],
+      "sell_weight_tertile": [
+        1.477455443789063,
+        1.477455443789063,
+        1.477455443789063
+      ],
+      "version": 9
+    }
+  }
+}

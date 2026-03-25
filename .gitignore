@@ -10,6 +10,9 @@ env/
 # Environment variables
 .env
 .env.*
+
+# T-Invest sandbox token (optional override; prefer env TINKOFF_SANDBOX_TOKEN)
+fix_engine/settings.local.cfg
 *.db
 *.sqlite3
 
@@ -17,6 +20,9 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+/dist/
+/build/
 
 # IDE/editor
 .idea/
@@ -25,3 +31,9 @@ env/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Runtime / local artifacts (regenerated on run)
+fix_engine/log/
+fix_engine/store/
+trade_economics.db
+last_session*.json

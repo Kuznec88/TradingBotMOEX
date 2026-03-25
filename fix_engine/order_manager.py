@@ -5,8 +5,6 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Dict, List
 
-import quickfix as fix
-
 
 @dataclass
 class ManagedOrder:
@@ -20,6 +18,7 @@ class ManagedOrder:
     filled_qty: float
     remaining_qty: float
     created_at: datetime
+    exchange_ack_at: datetime | None = None
 
 
 class OrderManager:
@@ -72,7 +71,7 @@ class OrderManager:
             self._orders[cl_ord_id] = order
             return order
 
-    def on_execution_report(self, message: fix.Message) -> dict[str, str]:
+    def on_execution_report(self, message: object) -> dict[str, str]:
         with self._lock:
             cl_ord_id = self._safe_get(message, 11)
             if not cl_ord_id:
@@ -129,7 +128,11 @@ class OrderManager:
                 "ord_rej_reason": self._safe_get(message, 103),
                 "text": self._safe_get(message, 58),
                 "exec_id": self._safe_get(message, 17),
-                "raw_inbound_fix": message.toString(),
+                "raw_inbound_fix": (
+                    message.toString()
+                    if hasattr(message, "toString") and callable(getattr(message, "toString"))
+                    else ""
+                ),
             }
 
     def remember_outbound_message(self, cl_ord_id: str, raw_fix: str) -> None:
@@ -163,6 +166,14 @@ class OrderManager:
         with self._lock:
             return self._orders.get(cl_ord_id)
 
+    def set_exchange_ack_timestamp(self, cl_ord_id: str, ack_at: datetime) -> None:
+        with self._lock:
+            order = self._orders.get(cl_ord_id)
+            if order is None:
+                return
+            if order.exchange_ack_at is None:
+                order.exchange_ack_at = ack_at
+
     @staticmethod
     def _normalize_side(side: str | int) -> str:
         if isinstance(side, int):
@@ -180,8 +191,12 @@ class OrderManager:
         raise ValueError("Side must be Buy/1 or Sell/2.")
 
     @staticmethod
-    def _safe_get(message: fix.Message, tag: int) -> str:
-        return message.getField(tag) if message.isSetField(tag) else ""
+    def _safe_get(message: object, tag: int) -> str:
+        get_field = getattr(message, "getField", None)
+        is_set = getattr(message, "isSetField", None)
+        if not callable(get_field) or not callable(is_set):
+            return ""
+        return get_field(tag) if is_set(tag) else ""
 
     @staticmethod
     def _to_float(value: str, default: float) -> float:

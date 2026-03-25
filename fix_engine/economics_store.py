@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from pathlib import Path
@@ -138,6 +139,121 @@ class EconomicsStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entry_decisions_symbol_time ON entry_decisions(symbol, timestamp)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS executed_entry_observability (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    exec_id TEXT NOT NULL UNIQUE,
+                    cl_ord_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    mid_price REAL NOT NULL,
+                    bid_price REAL NOT NULL,
+                    ask_price REAL NOT NULL,
+                    bid_size REAL NOT NULL,
+                    ask_size REAL NOT NULL,
+                    imbalance REAL NOT NULL,
+                    microprice_edge REAL NOT NULL,
+                    momentum_100ms REAL NOT NULL,
+                    momentum_500ms REAL NOT NULL,
+                    spread REAL NOT NULL,
+                    last_50ms_move REAL NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_executed_entry_obs_symbol_time ON executed_entry_observability(symbol, timestamp)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_observability (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id TEXT NOT NULL UNIQUE,
+                    round_trip_id TEXT,
+                    side TEXT NOT NULL,
+                    entry_timestamp TEXT,
+                    exit_timestamp TEXT,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    exit_price REAL NOT NULL DEFAULT 0,
+                    realized_pnl REAL NOT NULL DEFAULT 0,
+                    mid_price REAL NOT NULL DEFAULT 0,
+                    bid_price REAL NOT NULL DEFAULT 0,
+                    ask_price REAL NOT NULL DEFAULT 0,
+                    bid_size REAL NOT NULL DEFAULT 0,
+                    ask_size REAL NOT NULL DEFAULT 0,
+                    imbalance REAL NOT NULL DEFAULT 0,
+                    microprice_edge REAL NOT NULL DEFAULT 0,
+                    momentum_100ms REAL NOT NULL DEFAULT 0,
+                    momentum_500ms REAL NOT NULL DEFAULT 0,
+                    spread REAL NOT NULL DEFAULT 0,
+                    last_50ms_price_move REAL NOT NULL DEFAULT 0,
+                    decision_timestamp TEXT,
+                    order_sent_timestamp TEXT,
+                    fill_timestamp TEXT,
+                    latency_ms REAL NOT NULL DEFAULT 0,
+                    lookahead_violation INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_observability_created_at ON trade_observability(created_at)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS round_trip_observability (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    round_trip_id TEXT NOT NULL UNIQUE,
+                    trade_id TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_timestamp TEXT NOT NULL,
+                    exit_timestamp TEXT NOT NULL,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    exit_price REAL NOT NULL DEFAULT 0,
+                    realized_pnl REAL NOT NULL DEFAULT 0,
+                    duration_ms REAL NOT NULL DEFAULT 0,
+                    mfe REAL NOT NULL DEFAULT 0,
+                    mae REAL NOT NULL DEFAULT 0,
+                    adverse_rate REAL NOT NULL DEFAULT 0,
+                    immediate_move REAL NOT NULL DEFAULT 0,
+                    mid_price REAL NOT NULL DEFAULT 0,
+                    bid_price REAL NOT NULL DEFAULT 0,
+                    ask_price REAL NOT NULL DEFAULT 0,
+                    bid_size REAL NOT NULL DEFAULT 0,
+                    ask_size REAL NOT NULL DEFAULT 0,
+                    imbalance REAL NOT NULL DEFAULT 0,
+                    microprice_edge REAL NOT NULL DEFAULT 0,
+                    momentum_100ms REAL NOT NULL DEFAULT 0,
+                    momentum_500ms REAL NOT NULL DEFAULT 0,
+                    spread REAL NOT NULL DEFAULT 0,
+                    last_50ms_price_move REAL NOT NULL DEFAULT 0,
+                    decision_timestamp TEXT,
+                    order_sent_timestamp TEXT,
+                    fill_timestamp TEXT,
+                    latency_ms REAL NOT NULL DEFAULT 0,
+                    lookahead_violation INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_round_trip_observability_exit_ts ON round_trip_observability(exit_timestamp)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS learning_patch_effects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    applied_ts TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learning_patch_applied_ts ON learning_patch_effects(applied_ts)"
+            )
             self._ensure_column(conn, "trade_analytics", "adverse_px_500ms", "REAL")
             self._ensure_column(conn, "trade_analytics", "time_in_book_ms", "REAL NOT NULL DEFAULT 0")
             self._ensure_column(conn, "round_trip_analytics", "entry_price", "REAL NOT NULL DEFAULT 0")
@@ -153,6 +269,18 @@ class EconomicsStore:
                 INSERT OR IGNORE INTO analytics_state (id, cumulative_pnl, equity_peak, max_drawdown, win_count, total_trades, avg_trade_pnl)
                 VALUES (1, 0, 0, 0, 0, 0, 0)
                 """
+            )
+            conn.commit()
+
+    def insert_learning_patch_effects(self, payload: dict[str, object], *, applied_ts: str | None = None) -> None:
+        from datetime import datetime, timezone
+
+        ts = applied_ts or datetime.now(timezone.utc).isoformat()
+        blob = json.dumps(payload, ensure_ascii=False)
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "INSERT INTO learning_patch_effects (applied_ts, payload_json) VALUES (?, ?)",
+                (ts, blob),
             )
             conn.commit()
 
@@ -384,6 +512,193 @@ class EconomicsStore:
                     )
                     for row in rows
                 ],
+            )
+            conn.commit()
+
+    def insert_executed_entry_observability(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO executed_entry_observability(
+                    timestamp, exec_id, cl_ord_id, symbol, side,
+                    mid_price, bid_price, ask_price, bid_size, ask_size, imbalance,
+                    microprice_edge, momentum_100ms, momentum_500ms, spread, last_50ms_move
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("timestamp", "")),
+                        str(row.get("exec_id", "")),
+                        str(row.get("cl_ord_id", "")),
+                        str(row.get("symbol", "")),
+                        str(row.get("side", "")),
+                        float(row.get("mid_price", 0.0)),
+                        float(row.get("bid_price", 0.0)),
+                        float(row.get("ask_price", 0.0)),
+                        float(row.get("bid_size", 0.0)),
+                        float(row.get("ask_size", 0.0)),
+                        float(row.get("imbalance", 0.0)),
+                        float(row.get("microprice_edge", 0.0)),
+                        float(row.get("momentum_100ms", 0.0)),
+                        float(row.get("momentum_500ms", 0.0)),
+                        float(row.get("spread", 0.0)),
+                        float(row.get("last_50ms_move", 0.0)),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+
+    def insert_trade_observability(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO trade_observability(
+                    trade_id, round_trip_id, side, entry_timestamp, exit_timestamp, entry_price, exit_price, realized_pnl,
+                    mid_price, bid_price, ask_price, bid_size, ask_size, imbalance,
+                    microprice_edge, momentum_100ms, momentum_500ms, spread, last_50ms_price_move,
+                    decision_timestamp, order_sent_timestamp, fill_timestamp, latency_ms, lookahead_violation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("trade_id", "")),
+                        str(row.get("round_trip_id", "")) if row.get("round_trip_id") is not None else None,
+                        str(row.get("side", "")),
+                        str(row.get("entry_timestamp", "")),
+                        str(row.get("exit_timestamp", "")),
+                        float(row.get("entry_price", 0.0)),
+                        float(row.get("exit_price", 0.0)),
+                        float(row.get("realized_pnl", 0.0)),
+                        float(row.get("mid_price", 0.0)),
+                        float(row.get("bid_price", 0.0)),
+                        float(row.get("ask_price", 0.0)),
+                        float(row.get("bid_size", 0.0)),
+                        float(row.get("ask_size", 0.0)),
+                        float(row.get("imbalance", 0.0)),
+                        float(row.get("microprice_edge", 0.0)),
+                        float(row.get("momentum_100ms", 0.0)),
+                        float(row.get("momentum_500ms", 0.0)),
+                        float(row.get("spread", 0.0)),
+                        float(row.get("last_50ms_price_move", 0.0)),
+                        str(row.get("decision_timestamp", "")),
+                        str(row.get("order_sent_timestamp", "")),
+                        str(row.get("fill_timestamp", "")),
+                        float(row.get("latency_ms", 0.0)),
+                        1 if bool(row.get("lookahead_violation", False)) else 0,
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+
+    def insert_round_trip_observability(self, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO round_trip_observability(
+                    round_trip_id, trade_id, side, entry_timestamp, exit_timestamp, entry_price, exit_price,
+                    realized_pnl, duration_ms, mfe, mae, adverse_rate, immediate_move,
+                    mid_price, bid_price, ask_price, bid_size, ask_size, imbalance,
+                    microprice_edge, momentum_100ms, momentum_500ms, spread, last_50ms_price_move,
+                    decision_timestamp, order_sent_timestamp, fill_timestamp, latency_ms, lookahead_violation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("round_trip_id", "")),
+                        str(row.get("trade_id", "")),
+                        str(row.get("side", "")),
+                        str(row.get("entry_timestamp", "")),
+                        str(row.get("exit_timestamp", "")),
+                        float(row.get("entry_price", 0.0)),
+                        float(row.get("exit_price", 0.0)),
+                        float(row.get("realized_pnl", 0.0)),
+                        float(row.get("duration_ms", 0.0)),
+                        float(row.get("mfe", 0.0)),
+                        float(row.get("mae", 0.0)),
+                        float(row.get("adverse_rate", 0.0)),
+                        float(row.get("immediate_move", 0.0)),
+                        float(row.get("mid_price", 0.0)),
+                        float(row.get("bid_price", 0.0)),
+                        float(row.get("ask_price", 0.0)),
+                        float(row.get("bid_size", 0.0)),
+                        float(row.get("ask_size", 0.0)),
+                        float(row.get("imbalance", 0.0)),
+                        float(row.get("microprice_edge", 0.0)),
+                        float(row.get("momentum_100ms", 0.0)),
+                        float(row.get("momentum_500ms", 0.0)),
+                        float(row.get("spread", 0.0)),
+                        float(row.get("last_50ms_price_move", 0.0)),
+                        str(row.get("decision_timestamp", "")),
+                        str(row.get("order_sent_timestamp", "")),
+                        str(row.get("fill_timestamp", "")),
+                        float(row.get("latency_ms", 0.0)),
+                        1 if bool(row.get("lookahead_violation", False)) else 0,
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+
+    def get_trade_observability(self, trade_id: str) -> dict[str, object] | None:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    trade_id, round_trip_id, side, entry_timestamp, exit_timestamp, entry_price, exit_price, realized_pnl,
+                    mid_price, bid_price, ask_price, bid_size, ask_size, imbalance,
+                    microprice_edge, momentum_100ms, momentum_500ms, spread, last_50ms_price_move,
+                    decision_timestamp, order_sent_timestamp, fill_timestamp, latency_ms, lookahead_violation
+                FROM trade_observability
+                WHERE trade_id=?
+                """,
+                (trade_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "trade_id": str(row[0] or ""),
+            "round_trip_id": str(row[1] or ""),
+            "side": str(row[2] or ""),
+            "entry_timestamp": str(row[3] or ""),
+            "exit_timestamp": str(row[4] or ""),
+            "entry_price": float(row[5] or 0.0),
+            "exit_price": float(row[6] or 0.0),
+            "realized_pnl": float(row[7] or 0.0),
+            "mid_price": float(row[8] or 0.0),
+            "bid_price": float(row[9] or 0.0),
+            "ask_price": float(row[10] or 0.0),
+            "bid_size": float(row[11] or 0.0),
+            "ask_size": float(row[12] or 0.0),
+            "imbalance": float(row[13] or 0.0),
+            "microprice_edge": float(row[14] or 0.0),
+            "momentum_100ms": float(row[15] or 0.0),
+            "momentum_500ms": float(row[16] or 0.0),
+            "spread": float(row[17] or 0.0),
+            "last_50ms_price_move": float(row[18] or 0.0),
+            "decision_timestamp": str(row[19] or ""),
+            "order_sent_timestamp": str(row[20] or ""),
+            "fill_timestamp": str(row[21] or ""),
+            "latency_ms": float(row[22] or 0.0),
+            "lookahead_violation": bool(int(row[23] or 0)),
+        }
+
+    def link_trade_to_round_trip(self, *, trade_id: str, round_trip_id: str) -> None:
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """
+                UPDATE trade_observability
+                SET round_trip_id=?
+                WHERE trade_id=?
+                """,
+                (str(round_trip_id), str(trade_id)),
             )
             conn.commit()
 

@@ -8,23 +8,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 
-import quickfix as fix
-
 from analytics_api import TradingAnalyticsAPI
 from economics_store import EconomicsStore
-from execution_engine import ExecutionEngine
 from execution_gateway import ExecutionGateway
 from failure_monitor import FailureMonitor
 from market_making import BasicMarketMaker
 from market_data.market_data_engine import MarketDataEngine
 from market_data.models import MarketData
-from order_models import MarketType, OrderRequest
+from quote_history_store import QuoteHistoryStore
+from md_health_monitor import MdHealthMonitor
+from order_models import MarketType
 from order_manager import OrderManager
 from position_manager import PositionManager
 from risk_manager import RiskManager
-from simulation_profiles import normalize_simulation_profile, resolve_simulation_profile
 from structured_logging import StructuredLoggingRuntime, configure_structured_logging, log_event
-from trade_client import MoexFixApplication
 from unit_economics import UnitEconomicsCalculator, _d
 
 
@@ -103,6 +100,18 @@ class SimpleStrategy:
                     level=logging.INFO,
                     component="Strategy",
                     event="signal_generated",
+                    symbol=data.symbol,
+                    signal=self._latest_signal_by_symbol[data.symbol],
+                    bid=float(data.bid),
+                    ask=float(data.ask),
+                    spread=float(data.spread),
+                    mid_price=float(data.mid_price),
+                )
+                log_event(
+                    self.logger,
+                    level=logging.INFO,
+                    component="Strategy",
+                    event="ENTRY_SIGNAL",
                     symbol=data.symbol,
                     signal=self._latest_signal_by_symbol[data.symbol],
                     bid=float(data.bid),
@@ -215,228 +224,23 @@ class FillAdverseSelectionTracker:
         return adverse_pnl, adverse_pnl < 0.0
 
 
-def _safe_get(message: fix.Message, tag: int) -> str:
-    return message.getField(tag) if message.isSetField(tag) else ""
-
-
-def _safe_get_group(group: fix.Group, tag: int) -> str:
-    return group.getField(tag) if group.isSetField(tag) else ""
-
-
 def _format_fix_for_log(raw_fix: str) -> str:
     # SOH delimiter -> visible pipe for human-readable troubleshooting.
     return raw_fix.replace("\x01", "|")
 
 
-def _parse_market_data_message(
-    message: fix.Message,
-    market_data_engine: MarketDataEngine,
-    logger: logging.Logger,
-) -> None:
-    msg_type = _safe_get(message.getHeader(), 35)
-    if msg_type not in {fix.MsgType_MarketDataSnapshotFullRefresh, fix.MsgType_MarketDataIncrementalRefresh}:
-        return
-
-    no_md_entries = int(_safe_get(message, 268) or "0")
-    top_symbol = _safe_get(message, 55).upper()
-    snapshots: dict[str, dict[str, float | str]] = {}
-
-    # Use generic Group to avoid depending on generated group classes.
-    # Delimiter tag:
-    # - W (snapshot): 269
-    # - X (incremental): 279
-    delimiter = 269 if msg_type == fix.MsgType_MarketDataSnapshotFullRefresh else 279
-    for idx in range(1, no_md_entries + 1):
-        group = fix.Group(268, delimiter)
-        message.getGroup(idx, group)
-
-        symbol = (_safe_get_group(group, 55) or top_symbol).upper()
-        if not symbol:
-            continue
-
-        entry_type = _safe_get_group(group, 269)
-        px_str = _safe_get_group(group, 270)
-        size_str = _safe_get_group(group, 271)
-        if not px_str:
-            continue
-
-        px = float(px_str)
-        size = float(size_str) if size_str else 0.0
-        snapshot = snapshots.setdefault(
-            symbol,
-            {
-                "symbol": symbol,
-                "bid": 0.0,
-                "ask": 0.0,
-                "last": 0.0,
-                "volume": 0.0,
-            },
-        )
-
-        if entry_type == "0":  # bid
-            snapshot["bid"] = px
-        elif entry_type == "1":  # ask
-            snapshot["ask"] = px
-        elif entry_type in {"2", "7", "8"}:  # trade/close/open-ish
-            snapshot["last"] = px
-            snapshot["volume"] = size
-
-    for symbol, snapshot in snapshots.items():
-        latest = market_data_engine.get_latest(symbol)
-        bid = float(snapshot["bid"]) or (latest.bid if latest else float(snapshot["last"]) or 0.0)
-        ask = float(snapshot["ask"]) or (latest.ask if latest else float(snapshot["last"]) or bid)
-        last = float(snapshot["last"]) or (latest.last if latest else (bid + ask) / 2)
-        volume = float(snapshot["volume"]) or (latest.volume if latest else 0.0)
-
-        market_data_engine.update_market_data(
-            {
-                "symbol": symbol,
-                "bid": bid,
-                "ask": ask,
-                "last": last,
-                "volume": volume,
-            }
-        )
-        log_event(
-            logger,
-            level=logging.INFO,
-            component="MarketData",
-            event="market_data_snapshot",
-            correlation_id="",
-            source="FIX",
-            symbol=symbol,
-            bid=float(bid),
-            ask=float(ask),
-            spread=float(ask - bid),
-            last_price=float(last),
-        )
+def setup_logging(base_dir: Path, *, paper_execution: bool) -> StructuredLoggingRuntime:
+    return configure_structured_logging(base_dir=base_dir, paper_execution=paper_execution, logger_name="fix_engine")
 
 
-def setup_logging(base_dir: Path, *, simulation: bool) -> StructuredLoggingRuntime:
-    return configure_structured_logging(base_dir=base_dir, simulation=simulation, logger_name="fix_engine")
-
-
-def _resolve_fix44_dictionary(base_dir: Path) -> Path | None:
-    candidates: list[Path] = []
-
-    # Local project candidates.
-    candidates.append(base_dir / "FIX44.xml")
-    candidates.append(base_dir / "spec" / "FIX44.xml")
-
-    # Candidate inside installed quickfix package.
-    quickfix_dir = Path(fix.__file__).resolve().parent
-    candidates.append(quickfix_dir / "FIX44.xml")
-    candidates.append(quickfix_dir / "spec" / "FIX44.xml")
-
-    # Some distributions install under share dirs.
-    candidates.append(Path("/usr/share/quickfix/FIX44.xml"))
-    candidates.append(Path("/usr/local/share/quickfix/FIX44.xml"))
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def _load_settings_with_resolved_dictionary(settings_path: Path, logger: logging.Logger) -> fix.SessionSettings:
-    text = settings_path.read_text(encoding="utf-8")
-
-    dictionary_value = ""
-    for line in text.splitlines():
-        if line.strip().startswith("DataDictionary="):
-            dictionary_value = line.split("=", 1)[1].strip()
-            break
-
-    dictionary_path = Path(dictionary_value) if dictionary_value else Path()
-    if dictionary_value and not dictionary_path.is_absolute():
-        dictionary_path = (settings_path.parent / dictionary_path).resolve()
-
-    if not dictionary_value or not dictionary_path.exists():
-        resolved = _resolve_fix44_dictionary(settings_path.parent)
-        if resolved is None:
-            raise RuntimeError(
-                "FIX44.xml not found. Put FIX44.xml into fix_engine/ "
-                "or install quickfix package that includes spec/FIX44.xml."
-            )
-        logger.info("Using FIX dictionary: %s", resolved)
-        lines = []
-        replaced = False
-        for line in text.splitlines():
-            if line.strip().startswith("DataDictionary="):
-                lines.append(f"DataDictionary={resolved}")
-                replaced = True
-            else:
-                lines.append(line)
-        if not replaced:
-            lines.append(f"DataDictionary={resolved}")
-        runtime_cfg = settings_path.parent / "settings.runtime.cfg"
-        runtime_cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return fix.SessionSettings(str(runtime_cfg.resolve()))
-
-    return fix.SessionSettings(str(settings_path.resolve()))
-
-
-def _read_session_blocks(cfg_path: Path) -> list[dict[str, str]]:
-    current: dict[str, str] | None = None
-    sessions: list[dict[str, str]] = []
-
-    for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            if current is not None:
-                sessions.append(current)
-            section = line[1:-1].strip().upper()
-            current = {} if section == "SESSION" else None
-            continue
-        if current is None or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        current[k.strip()] = v.strip()
-
-    if current is not None:
-        sessions.append(current)
-    return sessions
-
-
-def _read_session_optional_setting_from_cfg(
-    cfg_path: Path,
-    key: str,
-    *,
-    target_comp_id: str,
-) -> str | None:
-    """
-    Parses duplicated [SESSION] blocks manually and returns key for selected session.
-    This avoids SWIG iteration issues with SessionSettings.getSessions().
-    """
-    sessions = _read_session_blocks(cfg_path)
-    for session in sessions:
-        if session.get("TargetCompID", "") == target_comp_id:
-            value = session.get(key, "").strip()
-            return value or None
-    return None
-
-
-def _read_passwords_by_target(cfg_path: Path) -> dict[str, str]:
-    mapping: dict[str, str] = {}
-    for session in _read_session_blocks(cfg_path):
-        target = session.get("TargetCompID", "").strip()
-        password = session.get("Password", "").strip()
-        if target and password:
-            mapping[target] = password
-    return mapping
-
-
-def _read_simulation_mode(cfg_path: Path) -> bool:
-    for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("SIMULATION_MODE="):
-            value = line.split("=", 1)[1].strip().upper()
-            return value in {"Y", "YES", "TRUE", "1", "ON"}
-    return False
+def _read_execution_mode(cfg_path: Path) -> str:
+    """LIVE = real routing (disabled in this build); PAPER_REAL_MARKET = real MD + local fills (synthetic or stream book)."""
+    value = (_read_default_optional_setting(cfg_path, "ExecutionMode") or "").strip().upper()
+    if value == "SIMULATION":
+        return "PAPER_REAL_MARKET"
+    if value in {"LIVE", "PAPER_REAL_MARKET"}:
+        return value
+    return "PAPER_REAL_MARKET"
 
 
 def _read_default_optional_setting(cfg_path: Path, key: str) -> str | None:
@@ -482,21 +286,61 @@ def _read_bool(cfg_path: Path, key: str, default: bool) -> bool:
     return value.strip().upper() in {"Y", "YES", "TRUE", "1", "ON"}
 
 
+def _read_csv_list(cfg_path: Path, key: str, default: list[str]) -> list[str]:
+    value = _read_default_optional_setting(cfg_path, key)
+    if not value:
+        return list(default)
+    items = [part.strip() for part in value.split(",")]
+    return [x for x in items if x]
+
+
+def _read_str(cfg_path: Path, key: str, default: str) -> str:
+    value = _read_default_optional_setting(cfg_path, key)
+    if value is None:
+        return default
+    return value.strip() or default
+
+
 def _source_to_market(source: str) -> MarketType:
     return MarketType.FORTS if source == "FORTS" else MarketType.EQUITIES
+
+
+class _NoopExecutionEngine:
+    def send_order(self, *args: object, **kwargs: object) -> str:
+        raise RuntimeError("Real exchange order routing is removed. Use paper execution only.")
+
+    def cancel_order(self, *args: object, **kwargs: object) -> str:
+        raise RuntimeError("Real exchange order routing is removed. Use paper execution only.")
 
 
 def run() -> None:
     base_dir = Path(__file__).resolve().parent
     settings_path = base_dir / "settings.cfg"
-    initial_simulation_mode = _read_simulation_mode(settings_path)
-    logging_runtime = setup_logging(base_dir, simulation=initial_simulation_mode)
-    logger = logging_runtime.logger
-    settings = _load_settings_with_resolved_dictionary(settings_path, logger)
     runtime_cfg_path = base_dir / "settings.runtime.cfg"
     cfg_for_optional = runtime_cfg_path if runtime_cfg_path.exists() else settings_path
+    execution_mode = _read_execution_mode(cfg_for_optional)
+    logging_runtime = setup_logging(base_dir, paper_execution=(execution_mode != "LIVE"))
+    logger = logging_runtime.logger
+    data_provider = _read_str(cfg_for_optional, "DataProvider", "TINKOFF").upper()
     order_manager = OrderManager()
     market_data_engine = MarketDataEngine(logger=logger)
+    quote_history_enabled = _read_bool(cfg_for_optional, "QuoteHistoryEnabled", True)
+    quote_history_db = base_dir / _read_str(cfg_for_optional, "QuoteHistoryDbPath", "quote_history.db")
+    quote_history_retention = _read_float(cfg_for_optional, "QuoteHistoryRetentionDays", 14.0)
+    quote_history_sample_ms = _read_float(cfg_for_optional, "QuoteHistorySampleIntervalMs", 1000.0)
+    quote_store: QuoteHistoryStore | None = None
+    if quote_history_enabled:
+        quote_store = QuoteHistoryStore(
+            quote_history_db,
+            retention_days=quote_history_retention,
+            sample_interval_ms=quote_history_sample_ms,
+        )
+        logger.info(
+            "[QUOTE_HISTORY] enabled path=%s retention_days=%s sample_ms=%s",
+            quote_history_db,
+            quote_history_retention,
+            quote_history_sample_ms,
+        )
     economics_store = EconomicsStore(base_dir / "trade_economics.db")
     analytics_api = TradingAnalyticsAPI(economics_store)
     adverse_tracker = FillAdverseSelectionTracker(economics_store)
@@ -558,7 +402,7 @@ def run() -> None:
         )
         return False
 
-    def on_execution_report(message: fix.Message, source: str) -> None:
+    def on_execution_report(message: object, source: str) -> None:
         recv_ts = time.perf_counter_ns()
         if failure_monitor is not None:
             failure_monitor.on_execution_report()
@@ -711,6 +555,18 @@ def run() -> None:
             if trade_record is not None:
                 with analytics_lock:
                     analytics_counters["total_trades_processed_for_analytics"] += 1
+                if source == "SYNTHETIC":
+                    log_event(
+                        logger,
+                        level=logging.INFO,
+                        component="SyntheticExecution",
+                        event="SYNTHETIC_EXECUTION",
+                        correlation_id=cl_ord_id,
+                        fill_price=float(fill_px),
+                        pnl=float(trade_record.get("net_pnl", 0.0)),
+                        symbol=str(trade_record.get("symbol", "")),
+                        side=str(state.get("side", "")),
+                    )
                 log_event(
                     logger,
                     level=logging.INFO,
@@ -818,6 +674,19 @@ def run() -> None:
                         logger,
                         level=logging.INFO,
                         component="TradeAnalysis",
+                        event="ROUND_TRIP",
+                        correlation_id=str(row.get("entry_trade_id", "")),
+                        pnl=float(row.get("total_pnl", 0.0)),
+                        mfe=float(row.get("mfe", 0.0)),
+                        mae=float(row.get("mae", 0.0)),
+                        adverse_flag=bool(immediate_move < 0.0),
+                        symbol=str(row.get("symbol", "")),
+                        side=str(row.get("side", "")),
+                    )
+                    log_event(
+                        logger,
+                        level=logging.INFO,
+                        component="TradeAnalysis",
                         event="trade_outcome",
                         correlation_id=str(row.get("entry_trade_id", "")),
                         symbol=str(row.get("symbol", "")),
@@ -904,114 +773,39 @@ def run() -> None:
                 latency_ms=round(latency_ms, 3),
             )
 
-    def on_market_data_message(message: fix.Message, source: str) -> None:
-        del source
-        _parse_market_data_message(message, market_data_engine, logger)
-
-    app = MoexFixApplication(
-        password_by_target=_read_passwords_by_target(cfg_for_optional),
-        logger=logger,
-        order_manager=order_manager,
-        on_execution_report=on_execution_report,
-        on_market_data=on_market_data_message,
-    )
-
-    store_factory = fix.FileStoreFactory(settings)
-    log_factory = fix.FileLogFactory(settings)
-    initiator = fix.SocketInitiator(app, store_factory, settings, log_factory)
-    simulation_mode = _read_simulation_mode(cfg_for_optional)
-    sender_comp_id_equities = (
-        _read_session_optional_setting_from_cfg(cfg_for_optional, "SenderCompID", target_comp_id="IFIX-EQ-UAT") or ""
-    ).strip()
-    sender_comp_id_forts = (
-        _read_session_optional_setting_from_cfg(cfg_for_optional, "SenderCompID", target_comp_id="FG") or ""
-    ).strip()
-    trading_account_equities = (
-        _read_default_optional_setting(cfg_for_optional, "EQUITIES.account")
-        or _read_default_optional_setting(cfg_for_optional, "EquitiesTradingAccount")
-        or _read_session_optional_setting_from_cfg(cfg_for_optional, "TradingAccount", target_comp_id="IFIX-EQ-UAT")
-        or ""
-    ).strip()
-    trading_account_forts = (
-        _read_default_optional_setting(cfg_for_optional, "FORTS.account")
-        or _read_default_optional_setting(cfg_for_optional, "FortsTradingAccount")
-        or _read_session_optional_setting_from_cfg(cfg_for_optional, "TradingAccount", target_comp_id="FG")
-        or ""
-    ).strip()
-    if not trading_account_equities:
-        logger.warning(
-            "Equities trading account is not set. "
-            "MOEX may reject orders with 'Invalid trading account'."
-        )
-    elif sender_comp_id_equities and trading_account_equities == sender_comp_id_equities:
-        logger.warning(
-            "TradingAccount is currently set to SenderCompID value (%s). "
-            "MOEX usually requires a separate valid trading account/portfolio code.",
-            trading_account_equities,
-        )
-        trading_account_equities = ""
-    if not trading_account_forts:
-        logger.warning(
-            "FORTS trading account is not set. "
-            "FORTS orders may be rejected with 'Invalid trading account'."
-        )
-    elif sender_comp_id_forts and trading_account_forts == sender_comp_id_forts:
-        logger.warning(
-            "FORTS TradingAccount is currently set to SenderCompID value (%s). "
-            "Use real FORTS account code, otherwise orders will be blocked locally.",
-            trading_account_forts,
-        )
-        trading_account_forts = ""
-    equities_engine = ExecutionEngine(
-        order_manager,
-        lambda: app.get_session_id(MarketType.EQUITIES),
-        logger,
-        trading_account=trading_account_equities,
-    )
-    forts_engine = ExecutionEngine(
-        order_manager,
-        lambda: app.get_session_id(MarketType.FORTS),
-        logger,
-        trading_session_id="FUT",
-        trading_account=trading_account_forts,
-    )
-    simulation_stress_params: dict[str, float | int] = {
-        "simulation_slippage_bps": _read_float(cfg_for_optional, "SimulationSlippageBps", 2.0),
-        "simulation_slippage_max_bps": _read_float(cfg_for_optional, "SimulationSlippageMaxBps", 25.0),
-        "simulation_volatility_slippage_multiplier": _read_float(
-            cfg_for_optional, "SimulationVolatilitySlippageMultiplier", 1.5
-        ),
-        "simulation_latency_network_ms": _read_int(cfg_for_optional, "SimulationNetworkLatencyMs", 20),
-        "simulation_latency_exchange_ms": _read_int(cfg_for_optional, "SimulationExchangeLatencyMs", 30),
-        "simulation_latency_jitter_ms": _read_int(cfg_for_optional, "SimulationLatencyJitterMs", 40),
-        "simulation_fill_participation": _read_float(cfg_for_optional, "SimulationFillParticipation", 0.25),
-        "simulation_touch_fill_probability": _read_float(cfg_for_optional, "SimulationTouchFillProbability", 0.15),
-        "simulation_passive_fill_probability_scale": _read_float(
-            cfg_for_optional, "SimulationPassiveFillProbabilityScale", 0.5
-        ),
-        "simulation_adverse_selection_bias": _read_float(cfg_for_optional, "SimulationAdverseSelectionBias", 0.35),
-    }
-    configured_simulation_profile = _read_default_optional_setting(cfg_for_optional, "SimulationProfile") or "STRESS"
-    runtime_simulation_profile_override = os.getenv("SIMULATION_PROFILE_OVERRIDE", "")
-    active_simulation_profile, resolved_simulation_params, simulation_profile_source = resolve_simulation_profile(
-        base_params=simulation_stress_params,
-        configured_profile=configured_simulation_profile,
-        runtime_override_profile=runtime_simulation_profile_override,
-    )
-    sim_slippage_bps = float(resolved_simulation_params["simulation_slippage_bps"])
-    sim_slippage_max_bps = float(resolved_simulation_params["simulation_slippage_max_bps"])
-    sim_vol_slippage_multiplier = float(resolved_simulation_params["simulation_volatility_slippage_multiplier"])
-    sim_latency_network_ms = int(resolved_simulation_params["simulation_latency_network_ms"])
-    sim_latency_exchange_ms = int(resolved_simulation_params["simulation_latency_exchange_ms"])
-    sim_latency_jitter_ms = int(resolved_simulation_params["simulation_latency_jitter_ms"])
-    sim_fill_participation = float(resolved_simulation_params["simulation_fill_participation"])
-    sim_touch_fill_probability = float(resolved_simulation_params["simulation_touch_fill_probability"])
-    sim_passive_fill_scale = float(resolved_simulation_params["simulation_passive_fill_probability_scale"])
-    sim_adverse_selection_bias = float(resolved_simulation_params["simulation_adverse_selection_bias"])
-    strategy_min_spread = _read_float(cfg_for_optional, "StrategyMinSpreadThreshold", 0.0)
-    strategy_max_volatility = _read_float(cfg_for_optional, "StrategyMaxVolatilityThreshold", 1.0)
-    strategy_vol_window = _read_int(cfg_for_optional, "StrategyVolatilityWindow", 20)
+    equities_engine = _NoopExecutionEngine()
+    forts_engine = _NoopExecutionEngine()
+    sim_slippage_bps = _read_float(cfg_for_optional, "PaperSlippageBps", 2.0)
+    sim_slippage_max_bps = _read_float(cfg_for_optional, "PaperSlippageMaxBps", 25.0)
+    sim_vol_slippage_multiplier = _read_float(cfg_for_optional, "PaperVolatilitySlippageMultiplier", 1.5)
+    sim_latency_network_ms = _read_int(cfg_for_optional, "PaperNetworkLatencyMs", 20)
+    sim_latency_exchange_ms = _read_int(cfg_for_optional, "PaperExchangeLatencyMs", 30)
+    sim_latency_jitter_ms = _read_int(cfg_for_optional, "PaperLatencyJitterMs", 40)
+    sim_fill_participation = _read_float(cfg_for_optional, "PaperFillParticipation", 0.25)
+    sim_touch_fill_probability = _read_float(cfg_for_optional, "PaperTouchFillProbability", 0.15)
+    sim_passive_fill_scale = _read_float(cfg_for_optional, "PaperPassiveFillProbabilityScale", 0.5)
+    sim_adverse_selection_bias = _read_float(cfg_for_optional, "PaperAdverseSelectionBias", 0.35)
+    paper_slippage_model = (_read_default_optional_setting(cfg_for_optional, "PaperSlippageModel") or "DYNAMIC_BPS").upper()
+    paper_fixed_slippage_abs = _read_float(cfg_for_optional, "PaperFixedSlippageAbs", 0.0)
+    paper_spread_slippage_fraction = _read_float(cfg_for_optional, "PaperSpreadSlippageFraction", 0.25)
+    decision_to_send_min_ms = _read_int(cfg_for_optional, "DecisionToSendLatencyMinMs", 5)
+    decision_to_send_max_ms = _read_int(cfg_for_optional, "DecisionToSendLatencyMaxMs", 20)
+    send_to_fill_min_ms = _read_int(cfg_for_optional, "SendToFillLatencyMinMs", 50)
+    send_to_fill_max_ms = _read_int(cfg_for_optional, "SendToFillLatencyMaxMs", 200)
+    paper_stream_book_fills = _read_bool(cfg_for_optional, "PaperStreamBookFills", False)
     max_loss_per_trade = _read_float(cfg_for_optional, "RiskMaxLossPerTrade", 0.0)
+    virtual_account_enabled = _read_bool(cfg_for_optional, "VirtualAccountEnabled", False)
+    virtual_account_start_balance = _read_float(cfg_for_optional, "VirtualAccountStartBalance", 0.0)
+    virtual_account_max_loss_fraction = _read_float(cfg_for_optional, "VirtualAccountMaxLossFraction", 0.0)
+    entry_forecast_profit_enabled = _read_bool(cfg_for_optional, "MMEntryForecastProfitEnabled", False)
+    entry_forecast_alignment_min = _read_float(cfg_for_optional, "MMEntryForecastAlignmentMin", 0.0)
+    if (
+        virtual_account_enabled
+        and virtual_account_start_balance > 0.0
+        and virtual_account_max_loss_fraction > 0.0
+    ):
+        # Derive stop-loss (PnL units) from virtual account constraints.
+        max_loss_per_trade = float(virtual_account_start_balance) * float(virtual_account_max_loss_fraction)
     mm_volatility_window_ticks = _read_int(cfg_for_optional, "MMVolatilityWindowTicks", 20)
     mm_max_short_term_volatility = _read_float(cfg_for_optional, "MMMaxShortTermVolatility", 0.0)
     mm_cancel_on_high_volatility = _read_bool(cfg_for_optional, "MMCancelOnHighVolatility", True)
@@ -1040,6 +834,60 @@ def run() -> None:
     mm_entry_direction_min_move_ticks = _read_float(cfg_for_optional, "MMEntryDirectionMinMoveTicks", 1.0)
     mm_trade_cooldown_ms = _read_int(cfg_for_optional, "MMTradeCooldownMs", 300)
     mm_entry_min_place_interval_ms = _read_int(cfg_for_optional, "MMEntryMinPlaceIntervalMs", 200)
+    mm_one_position_only = _read_bool(cfg_for_optional, "MMOnePositionOnly", True)
+    mm_reversal_enabled = _read_bool(cfg_for_optional, "MMReversalEnabled", True)
+    mm_reversal_confirmation_updates = _read_int(cfg_for_optional, "MMReversalConfirmationUpdates", 3)
+    mm_reversal_min_trend_strength = _read_float(cfg_for_optional, "MMReversalMinTrendStrength", 0.0008)
+    mm_reversal_min_hold_ms = _read_int(cfg_for_optional, "MMReversalMinHoldMs", 120000)
+    mm_reversal_cooldown_ms = _read_int(cfg_for_optional, "MMReversalCooldownMs", 120000)
+    mm_weekly_trend_enabled = _read_bool(cfg_for_optional, "MMWeeklyTrendEnabled", True)
+    mm_weekly_trend_days = _read_float(cfg_for_optional, "MMWeeklyTrendDays", 7.0)
+    mm_weekly_trend_threshold_pct = _read_float(cfg_for_optional, "MMWeeklyTrendThresholdPct", 0.5)
+    mm_weekly_trend_refresh_sec = _read_float(cfg_for_optional, "MMWeeklyTrendRefreshSec", 30.0)
+    mm_volume_move_corr_enabled = _read_bool(cfg_for_optional, "MMVolumeMoveCorrEnabled", False)
+    mm_volume_move_corr_lookback_days = _read_float(cfg_for_optional, "MMVolumeMoveCorrLookbackDays", 14.0)
+    mm_volume_move_corr_bar_minutes = _read_int(cfg_for_optional, "MMVolumeMoveCorrBarMinutes", 5)
+    mm_volume_move_corr_min_samples = _read_int(cfg_for_optional, "MMVolumeMoveCorrMinSamples", 500)
+    mm_volume_move_corr_threshold = _read_float(cfg_for_optional, "MMVolumeMoveCorrThreshold", 0.15)
+    mm_volume_move_corr_refresh_sec = _read_float(cfg_for_optional, "MMVolumeMoveCorrRefreshSec", 60.0)
+    mm_five_min_entry_gate_enabled = _read_bool(cfg_for_optional, "MMFiveMinEntryGateEnabled", True)
+    mm_five_min_impulse_min_ticks = _read_float(cfg_for_optional, "MMFiveMinImpulseMinTicks", 0.5)
+    mm_five_min_volume_ratio_min = _read_float(cfg_for_optional, "MMFiveMinVolumeRatioMin", 1.05)
+    mm_trend_continuation_enabled = _read_bool(cfg_for_optional, "MMTrendContinuationEnabled", True)
+    mm_trend_continuation_confirm_updates = _read_int(cfg_for_optional, "MMTrendContinuationConfirmUpdates", 3)
+    mm_trend_continuation_min_move_ticks = _read_float(cfg_for_optional, "MMTrendContinuationMinMoveTicks", 1.0)
+    mm_flow_bias_window_ticks = _read_int(cfg_for_optional, "MMFlowBiasWindowTicks", 12)
+    mm_long_flow_bias_min = _read_float(cfg_for_optional, "MMLongFlowBiasMin", 0.05)
+    mm_long_trend_bias_min_ticks = _read_float(cfg_for_optional, "MMLongTrendBiasMinTicks", 0.75)
+    mm_long_impulse_override_ticks = _read_float(cfg_for_optional, "MMLongImpulseOverrideTicks", 3.0)
+    mm_short_flow_bias_max = _read_float(cfg_for_optional, "MMShortFlowBiasMax", 0.20)
+    mm_short_trend_bias_min_ticks = _read_float(cfg_for_optional, "MMShortTrendBiasMinTicks", 0.50)
+    mm_volume_flow_override_ticks = _read_float(cfg_for_optional, "MMVolumeFlowOverrideTicks", 1.50)
+    mm_volume_spike_entry_enabled = _read_bool(cfg_for_optional, "MMVolumeSpikeEntryEnabled", True)
+    mm_volume_spike_window_ticks = _read_int(cfg_for_optional, "MMVolumeSpikeWindowTicks", 24)
+    mm_volume_spike_multiplier = _read_float(cfg_for_optional, "MMVolumeSpikeMultiplier", 2.0)
+    mm_volume_spike_flow_bias_abs_min = _read_float(cfg_for_optional, "MMVolumeSpikeFlowBiasAbsMin", 0.20)
+    mm_momentum_exit_enabled = _read_bool(cfg_for_optional, "MMMomentumExitEnabled", True)
+    mm_ignore_duplicate_ticks_ms = _read_int(cfg_for_optional, "MMIgnoreDuplicateTicksMs", 120)
+    mm_decision_min_mid_move_ticks = _read_float(cfg_for_optional, "MMDecisionMinMidMoveTicks", 0.5)
+    mm_tray_price_every_sec = _read_float(cfg_for_optional, "MMTrayPriceEverySec", 3.0)
+    mm_take_profit_per_trade = _read_float(cfg_for_optional, "MMTakeProfitPerTrade", 4.0)
+    mm_dynamic_profit_target_enabled = _read_bool(cfg_for_optional, "MMDynamicProfitTargetEnabled", True)
+    mm_dynamic_profit_target_vol_multiplier = _read_float(
+        cfg_for_optional, "MMDynamicProfitTargetVolMultiplier", 1.8
+    )
+    mm_dynamic_profit_target_momentum_weight = _read_float(
+        cfg_for_optional, "MMDynamicProfitTargetMomentumWeight", 0.35
+    )
+    mm_dynamic_profit_target_flow_weight = _read_float(
+        cfg_for_optional, "MMDynamicProfitTargetFlowWeight", 0.60
+    )
+    mm_dynamic_profit_target_trend_weight = _read_float(
+        cfg_for_optional, "MMDynamicProfitTargetTrendWeight", 0.45
+    )
+    mm_dynamic_profit_target_min = _read_float(cfg_for_optional, "MMDynamicProfitTargetMin", 2.0)
+    mm_dynamic_profit_target_max = _read_float(cfg_for_optional, "MMDynamicProfitTargetMax", 30.0)
+    mm_breakeven_trailing_offset_ticks = _read_float(cfg_for_optional, "MMBreakevenTrailingOffsetTicks", 5.0)
     mm_entry_score_threshold = _read_float(cfg_for_optional, "MMEntryScoreThreshold", 0.6)
     mm_entry_score_spread_threshold = _read_float(cfg_for_optional, "MMEntryScoreSpreadThreshold", 0.02)
     mm_entry_score_w_spread = _read_float(cfg_for_optional, "MMEntryScoreWSpread", 0.35)
@@ -1076,12 +924,36 @@ def run() -> None:
     mm_cancel_impact_horizon_ms = _read_int(cfg_for_optional, "MMCancelImpactHorizonMs", 500)
     mm_cancel_reason_summary_every = _read_int(cfg_for_optional, "MMCancelReasonSummaryEvery", 20)
     mm_disable_price_move_cancel = _read_bool(cfg_for_optional, "MMDisablePriceMoveCancel", False)
+    mm_microprice_edge_threshold = _read_float(cfg_for_optional, "MMMicropriceEdgeThreshold", 0.0002)
+    mm_spread_median_window_ticks = _read_int(cfg_for_optional, "MMSpreadMedianWindowTicks", 64)
+    mm_anti_adverse_window_ms = _read_int(cfg_for_optional, "MMAntiAdverseWindowMs", 50)
+    mm_kpi_eval_every_trades = _read_int(cfg_for_optional, "MMKpiEvalEveryTrades", 50)
+    mm_kpi_threshold_step = _read_float(cfg_for_optional, "MMKpiThresholdStep", 0.0001)
+    mm_position_policy_enabled = _read_bool(cfg_for_optional, "MMPositionPolicyEnabled", False)
+    mm_adaptive_targets_path_raw = _read_str(cfg_for_optional, "MMAdaptiveTargetsPath", "")
+    mm_adaptive_targets_path = ""
+    if mm_adaptive_targets_path_raw.strip():
+        _mm_at = Path(mm_adaptive_targets_path_raw.strip())
+        mm_adaptive_targets_path = str(_mm_at if _mm_at.is_absolute() else base_dir / _mm_at)
+    mm_learning_patch_path_raw = _read_str(cfg_for_optional, "MMLearningPatchStatePath", "")
+    mm_learning_patch_path = ""
+    if mm_learning_patch_path_raw.strip():
+        _mm_lp = Path(mm_learning_patch_path_raw.strip())
+        mm_learning_patch_path = str(_mm_lp if _mm_lp.is_absolute() else base_dir / _mm_lp)
+    mm_strategy_mode = (_read_str(cfg_for_optional, "MMStrategyMode", "MOMENTUM_BREAKOUT").strip().upper() or "MOMENTUM_BREAKOUT")
+    mm_momentum_params_path_raw = _read_str(cfg_for_optional, "MMMomentumParamsPath", "")
+    mm_momentum_params_path = ""
+    if mm_momentum_params_path_raw.strip():
+        _mm_mo = Path(mm_momentum_params_path_raw.strip())
+        mm_momentum_params_path = str(_mm_mo if _mm_mo.is_absolute() else base_dir / _mm_mo)
+    trading_account_equities = _read_str(cfg_for_optional, "TradingAccountEquities", "")
+    trading_account_forts = _read_str(cfg_for_optional, "TradingAccountForts", "")
     gateway = ExecutionGateway(
         equities_engine=equities_engine,
         forts_engine=forts_engine,
         order_manager=order_manager,
         logger=logger,
-        simulation_mode=simulation_mode,
+        simulation_mode=False,
         get_latest_market_data=market_data_engine.get_latest,
         on_execution_report=on_execution_report,
         risk_manager=risk_manager,
@@ -1096,18 +968,33 @@ def run() -> None:
         simulation_touch_fill_probability=sim_touch_fill_probability,
         simulation_passive_fill_probability_scale=sim_passive_fill_scale,
         simulation_adverse_selection_bias=sim_adverse_selection_bias,
+        simulation_slippage_model=paper_slippage_model,
+        simulation_fixed_slippage_abs=paper_fixed_slippage_abs,
+        simulation_spread_slippage_fraction=paper_spread_slippage_fraction,
+        simulation_decision_to_send_min_ms=decision_to_send_min_ms,
+        simulation_decision_to_send_max_ms=decision_to_send_max_ms,
+        simulation_send_to_fill_min_ms=send_to_fill_min_ms,
+        simulation_send_to_fill_max_ms=send_to_fill_max_ms,
         account_by_market={
             MarketType.EQUITIES: trading_account_equities,
             MarketType.FORTS: trading_account_forts,
         },
+        execution_mode=execution_mode,
+        stream_book_fills=paper_stream_book_fills,
     )
     logger.info(
-        "[SIM][PROFILE] active=%s source=%s simulation_mode=%s config=%s",
-        active_simulation_profile,
-        simulation_profile_source,
-        simulation_mode,
+        "[PAPER][EXEC] execution_mode=%s fill_config=%s",
+        execution_mode,
         gateway.simulation_config_snapshot(),
     )
+    if execution_mode == "PAPER_REAL_MARKET":
+        logger.warning(
+            "[SAFETY] PAPER_REAL_MARKET enabled: real market data + local execution only; real order routing disabled."
+        )
+        if paper_stream_book_fills:
+            logger.info(
+                "[EXEC] PaperStreamBookFills=Y: fills priced from live bid/ask (PaperSlippage*/latency/ adverse sim keys ignored)."
+            )
     if failure_handling_enabled:
         failure_monitor = FailureMonitor(
             logger=logger,
@@ -1120,13 +1007,8 @@ def run() -> None:
             action_on_anomaly=(_read_default_optional_setting(cfg_for_optional, "FailureAction") or "ALERT"),
             check_interval_sec=_read_int(cfg_for_optional, "FailureCheckIntervalSec", 1),
         )
-    strategy = SimpleStrategy(
-        logger=logger,
-        min_spread_threshold=strategy_min_spread,
-        max_volatility_threshold=strategy_max_volatility,
-        volatility_window=strategy_vol_window,
-    )
-    market_data_engine.subscribe(strategy.on_market_data)
+    if quote_store is not None:
+        market_data_engine.subscribe(quote_store.on_market_data)
     market_data_engine.subscribe(gateway.on_market_data)
     market_data_engine.subscribe(
         lambda data: economics.on_market_data(
@@ -1153,6 +1035,11 @@ def run() -> None:
             position_manager=position_manager,
             logger=logger,
             max_loss_per_trade=max_loss_per_trade,
+            virtual_account_enabled=virtual_account_enabled,
+            virtual_account_start_balance=virtual_account_start_balance,
+            virtual_account_max_loss_fraction=virtual_account_max_loss_fraction,
+            entry_forecast_profit_enabled=entry_forecast_profit_enabled,
+            entry_forecast_alignment_min=entry_forecast_alignment_min,
             volatility_window_ticks=mm_volatility_window_ticks,
             max_short_term_volatility=mm_max_short_term_volatility,
             cancel_on_high_volatility=mm_cancel_on_high_volatility,
@@ -1187,6 +1074,54 @@ def run() -> None:
             entry_direction_min_move_ticks=mm_entry_direction_min_move_ticks,
             trade_cooldown_ms=mm_trade_cooldown_ms,
             entry_min_place_interval_ms=mm_entry_min_place_interval_ms,
+            one_position_only=mm_one_position_only,
+            reversal_enabled=mm_reversal_enabled,
+            reversal_confirmation_updates=mm_reversal_confirmation_updates,
+            reversal_min_trend_strength=mm_reversal_min_trend_strength,
+            reversal_min_hold_ms=mm_reversal_min_hold_ms,
+            reversal_cooldown_ms=mm_reversal_cooldown_ms,
+            weekly_trend_enabled=mm_weekly_trend_enabled,
+            weekly_trend_db_path=str(quote_history_db),
+            weekly_trend_days=mm_weekly_trend_days,
+            weekly_trend_threshold_pct=mm_weekly_trend_threshold_pct,
+            weekly_trend_refresh_sec=mm_weekly_trend_refresh_sec,
+            volume_move_corr_enabled=mm_volume_move_corr_enabled,
+            volume_move_corr_db_path=str(quote_history_db),
+            volume_move_corr_lookback_days=mm_volume_move_corr_lookback_days,
+            volume_move_corr_bar_minutes=mm_volume_move_corr_bar_minutes,
+            volume_move_corr_min_samples=mm_volume_move_corr_min_samples,
+            volume_move_corr_threshold=mm_volume_move_corr_threshold,
+            volume_move_corr_refresh_sec=mm_volume_move_corr_refresh_sec,
+            five_min_entry_gate_enabled=mm_five_min_entry_gate_enabled,
+            five_min_impulse_min_ticks=mm_five_min_impulse_min_ticks,
+            five_min_volume_ratio_min=mm_five_min_volume_ratio_min,
+            trend_continuation_enabled=mm_trend_continuation_enabled,
+            trend_continuation_confirm_updates=mm_trend_continuation_confirm_updates,
+            trend_continuation_min_move_ticks=mm_trend_continuation_min_move_ticks,
+            flow_bias_window_ticks=mm_flow_bias_window_ticks,
+            long_flow_bias_min=mm_long_flow_bias_min,
+            long_trend_bias_min_ticks=mm_long_trend_bias_min_ticks,
+            long_impulse_override_ticks=mm_long_impulse_override_ticks,
+            short_flow_bias_max=mm_short_flow_bias_max,
+            short_trend_bias_min_ticks=mm_short_trend_bias_min_ticks,
+            volume_flow_override_ticks=mm_volume_flow_override_ticks,
+            volume_spike_entry_enabled=mm_volume_spike_entry_enabled,
+            volume_spike_window_ticks=mm_volume_spike_window_ticks,
+            volume_spike_multiplier=mm_volume_spike_multiplier,
+            volume_spike_flow_bias_abs_min=mm_volume_spike_flow_bias_abs_min,
+            momentum_exit_enabled=mm_momentum_exit_enabled,
+            ignore_duplicate_ticks_ms=mm_ignore_duplicate_ticks_ms,
+            decision_min_mid_move_ticks=mm_decision_min_mid_move_ticks,
+            tray_price_every_sec=mm_tray_price_every_sec,
+            take_profit_per_trade=mm_take_profit_per_trade,
+            dynamic_profit_target_enabled=mm_dynamic_profit_target_enabled,
+            dynamic_profit_target_vol_multiplier=mm_dynamic_profit_target_vol_multiplier,
+            dynamic_profit_target_momentum_weight=mm_dynamic_profit_target_momentum_weight,
+            dynamic_profit_target_flow_weight=mm_dynamic_profit_target_flow_weight,
+            dynamic_profit_target_trend_weight=mm_dynamic_profit_target_trend_weight,
+            dynamic_profit_target_min=mm_dynamic_profit_target_min,
+            dynamic_profit_target_max=mm_dynamic_profit_target_max,
+            breakeven_trailing_offset_ticks=mm_breakeven_trailing_offset_ticks,
             entry_score_threshold=mm_entry_score_threshold,
             entry_score_spread_threshold=mm_entry_score_spread_threshold,
             entry_score_w_spread=mm_entry_score_w_spread,
@@ -1207,8 +1142,19 @@ def run() -> None:
             cancel_impact_horizon_ms=mm_cancel_impact_horizon_ms,
             cancel_reason_summary_every=mm_cancel_reason_summary_every,
             disable_price_move_cancel=mm_disable_price_move_cancel,
+            microprice_edge_threshold=mm_microprice_edge_threshold,
+            spread_median_window_ticks=mm_spread_median_window_ticks,
+            anti_adverse_window_ms=mm_anti_adverse_window_ms,
+            kpi_eval_every_trades=mm_kpi_eval_every_trades,
+            kpi_threshold_step=mm_kpi_threshold_step,
             cancel_analytics_sink=economics_store.insert_cancel_analytics,
             entry_decision_sink=economics_store.insert_entry_decisions,
+            position_policy_enabled=mm_position_policy_enabled,
+            adaptive_targets_path=mm_adaptive_targets_path,
+            learning_patch_path=mm_learning_patch_path,
+            economics_store=economics_store,
+            strategy_mode=mm_strategy_mode,
+            momentum_params_path=mm_momentum_params_path,
         )
         market_data_engine.subscribe(market_maker.on_market_data)
         logger.info(
@@ -1262,300 +1208,127 @@ def run() -> None:
             mm_cancel_reason_summary_every,
             mm_disable_price_move_cancel,
         )
+        logger.info("[MM][STRATEGY_DIAGNOSTIC] strategy_mode=%s", mm_strategy_mode)
+        logger.info(
+            "[MM][POSITION_POLICY] MMPositionPolicyEnabled=%s MMAdaptiveTargetsPath=%s MMLearningPatchStatePath=%s",
+            mm_position_policy_enabled,
+            mm_adaptive_targets_path or "(bundled adaptive_learning_targets.json if present)",
+            mm_learning_patch_path or "(default fix_engine/learning_patch_state.json)",
+        )
 
-    try:
-        initiator.start()
-    except Exception as exc:
-        logger.exception("Failed to start FIX initiator: %s", exc)
-        logging_runtime.listener.stop()
-        return
-    if failure_monitor is not None:
-        failure_monitor.start()
+    if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:
+        from tbank_preflight import load_sandbox_token, verify_market_data_readonly
+        from tbank_sandbox_feed import run_tbank_sandbox_market_data
+        from tools.export_session_metrics import print_post_run_summary
 
-    logger.info("FIX TRADE + DROP_COPY started. Wait for TRADE onLogon before sending orders.")
-    logger.info(
-        "Commands:\n"
-        "  m [MARKET] SYMBOL SIDE QTY\n"
-        "  l [MARKET] SYMBOL SIDE QTY PRICE\n"
-        "  c CL_ORD_ID\n"
-        "  sig LAST_PRICE SYMBOL QTY\n"
-        "  md SYMBOL BID ASK LAST VOLUME [QTY]\n"
-        "  pos SYMBOL\n"
-        "  open\n"
-        "  checkacc [SYMBOL] [QTY]\n"
-        "  metrics\n"
-        "  toplosers [N]\n"
-        "  topwinners [N]\n"
-        "  worstslip [N]\n"
-        "  pnlcomp\n"
-        "  fillquality\n"
-        "  lossanalysis\n"
-        "  analyticscounters\n"
-        "  backfillanalytics [N]\n"
-        "  analyticsmissing [N]\n"
-        "  entrycorr\n"
-        "  cancelimpact\n"
-        "  simprofile [REALISTIC|STRESS|EXTREME]\n"
-        "  q"
-    )
+        md_health: MdHealthMonitor | None = None
+        if execution_mode != "PAPER_REAL_MARKET":
+            raise RuntimeError(
+                f"Sandbox paper session requires ExecutionMode=PAPER_REAL_MARKET, got {execution_mode!r}"
+            )
+        if not gateway._uses_local_sim_execution:
+            raise RuntimeError("FATAL: gateway must use local synthetic execution for paper sandbox run")
+        log_event(
+            logger,
+            level=logging.INFO,
+            component="Preflight",
+            event="paper_execution_guard",
+            execution_mode=gateway.execution_mode,
+            uses_local_sim_execution=gateway._uses_local_sim_execution,
+        )
 
-    try:
-        while True:
-            command = input("> ").strip()
-            if not command:
-                continue
-            if command.lower() == "q":
-                break
+        tbank_host = _read_str(cfg_for_optional, "TBankSandboxHost", "invest-public-api.tinkoff.ru:443")
+        tbank_token = os.getenv("TINKOFF_TOKEN", "").strip() or os.getenv("TINKOFF_SANDBOX_TOKEN", "").strip()
+        if not tbank_token:
+            _local_secrets = base_dir / "settings.local.cfg"
+            if _local_secrets.exists():
+                tbank_token = _read_str(_local_secrets, "TBankSandboxToken", "").strip()
+        if not tbank_token:
+            tbank_token = _read_str(cfg_for_optional, "TBankSandboxToken", "").strip()
+        tbank_instrument_id = _read_str(cfg_for_optional, "TBankInstrumentId", "")
+        tbank_symbol = _read_str(cfg_for_optional, "TBankSymbol", "SBER")
+        tbank_depth = _read_int(cfg_for_optional, "TBankOrderBookDepth", 1)
+        tbank_include_trades = _read_bool(cfg_for_optional, "TBankIncludeTrades", True)
+        tbank_run_duration_sec = _read_int(cfg_for_optional, "TBankRunDurationSec", 0)
+        tbank_md_reconnect_initial_sec = _read_float(cfg_for_optional, "TBankMdReconnectInitialSec", 1.0)
+        tbank_md_reconnect_max_sec = _read_float(cfg_for_optional, "TBankMdReconnectMaxSec", 60.0)
+        tbank_md_stale_reconnect_sec = _read_float(cfg_for_optional, "TBankMdStaleReconnectSec", 90.0)
+        _env_dur = os.getenv("TBANK_RUN_DURATION_SEC", "").strip()
+        if _env_dur:
+            try:
+                tbank_run_duration_sec = int(_env_dur)
+            except ValueError:
+                logger.warning("TBANK_RUN_DURATION_SEC ignored (not an integer): %s", _env_dur)
 
-            parts = command.split()
-            kind = parts[0].lower()
-            if kind == "m" and len(parts) == 4:
-                _, symbol, side, qty = parts
-                try:
-                    cl_ord_id = gateway.send_order(
-                        OrderRequest(symbol=symbol, side=side, qty=float(qty), account="")
-                    )
-                    logger.info("Market order queued, ClOrdID=%s", cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed to send market order: %s", exc)
-            elif kind == "m" and len(parts) == 5:
-                _, market_raw, symbol, side, qty = parts
-                try:
-                    market = MarketType(market_raw.upper())
-                    cl_ord_id = gateway.send_order(
-                        OrderRequest(symbol=symbol, side=side, qty=float(qty), account="", market=market)
-                    )
-                    logger.info("%s market order queued, ClOrdID=%s", market.value, cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed to send market order: %s", exc)
-            elif kind == "l" and len(parts) == 5:
-                _, symbol, side, qty, price = parts
-                try:
-                    cl_ord_id = gateway.send_order(
-                        OrderRequest(symbol=symbol, side=side, qty=float(qty), account="", price=float(price))
-                    )
-                    logger.info("Limit order queued, ClOrdID=%s", cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed to send limit order: %s", exc)
-            elif kind == "l" and len(parts) == 6:
-                _, market_raw, symbol, side, qty, price = parts
-                try:
-                    market = MarketType(market_raw.upper())
-                    cl_ord_id = gateway.send_order(
-                        OrderRequest(
-                            symbol=symbol,
-                            side=side,
-                            qty=float(qty),
-                            account="",
-                            price=float(price),
-                            market=market,
-                        )
-                    )
-                    logger.info("%s limit order queued, ClOrdID=%s", market.value, cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed to send limit order: %s", exc)
-            elif kind == "c" and len(parts) == 2:
-                _, cl_ord_id = parts
-                try:
-                    cancel_id = gateway.cancel_order(cl_ord_id)
-                    logger.info("Cancel sent. CancelClOrdID=%s", cancel_id)
-                except Exception as exc:
-                    logger.exception("Failed to cancel order: %s", exc)
-            elif kind == "sig" and len(parts) == 4:
-                _, last_price, symbol, qty = parts
-                try:
-                    lp = float(last_price)
-                    market_data_engine.update_market_data(
-                        {
-                            "symbol": symbol,
-                            "bid": lp,
-                            "ask": lp,
-                            "last": lp,
-                            "volume": 0,
-                        }
-                    )
-                    signal = strategy.pop_signal(symbol)
-                    logger.info("[STRATEGY] symbol=%s last=%s signal=%s", symbol, last_price, signal)
-                    if signal in {"BUY", "SELL"}:
-                        qty_f = float(qty)
-                        if _strategy_inventory_allowed(symbol, signal, qty_f):
-                            cl_ord_id = gateway.send_order(
-                                OrderRequest(
-                                    symbol=symbol,
-                                    side=signal,
-                                    qty=qty_f,
-                                    account="",
-                                    market=MarketType.EQUITIES,
-                                )
-                            )
-                            logger.info("Signal order sent, ClOrdID=%s", cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed strategy signal handling: %s", exc)
-            elif kind == "md" and len(parts) in {6, 7}:
-                _, symbol, bid, ask, last, volume, *rest = parts
-                try:
-                    market_data = market_data_engine.update_market_data(
-                        {
-                            "symbol": symbol,
-                            "bid": float(bid),
-                            "ask": float(ask),
-                            "last": float(last),
-                            "volume": float(volume),
-                        }
-                    )
-                    signal = strategy.pop_signal(symbol)
-                    logger.info(
-                        "[STRATEGY] symbol=%s mid=%s spread=%s signal=%s",
-                        market_data.symbol,
-                        round(market_data.mid_price, 6),
-                        round(market_data.spread, 6),
-                        signal,
-                    )
-                    if signal in {"BUY", "SELL"}:
-                        qty = float(rest[0]) if rest else 1.0
-                        if _strategy_inventory_allowed(symbol, signal, qty):
-                            cl_ord_id = gateway.send_order(
-                                OrderRequest(
-                                    symbol=symbol,
-                                    side=signal,
-                                    qty=qty,
-                                    account="",
-                                    market=MarketType.EQUITIES,
-                                )
-                            )
-                            logger.info("MarketData signal order sent, ClOrdID=%s", cl_ord_id)
-                except Exception as exc:
-                    logger.exception("Failed market data processing: %s", exc)
-            elif kind == "pos" and len(parts) == 2:
-                _, symbol = parts
-                logger.info("Position %s = %s", symbol, order_manager.get_position(symbol))
-            elif kind == "open" and len(parts) == 1:
-                open_orders = order_manager.get_open_orders()
-                logger.info("Open orders: %s", [o.__dict__ for o in open_orders])
-            elif kind == "checkacc" and len(parts) in {1, 2, 3}:
-                symbol = "SBER"
-                qty = 1.0
-                if len(parts) >= 2:
-                    symbol = parts[1]
-                if len(parts) == 3:
-                    qty = float(parts[2])
-                try:
-                    cl_ord_id = gateway.send_order(
-                        OrderRequest(
-                            symbol=symbol,
-                            side="BUY",
-                            qty=qty,
-                            account="",
-                            market=MarketType.EQUITIES,
-                        )
-                    )
-                    account_check_pending.add(cl_ord_id)
-                    logger.info(
-                        "[CHECKACC] sent test order cl_ord_id=%s symbol=%s qty=%s",
-                        cl_ord_id,
-                        symbol,
-                        qty,
-                    )
-                except Exception as exc:
-                    logger.exception("[CHECKACC][FAIL] unable to send test order: %s", exc)
-            elif kind == "metrics" and len(parts) == 1:
-                metrics = analytics_api.get_metrics()
-                logger.info(
-                    "[METRICS] cumulative_pnl=%.4f max_drawdown=%.4f success=%.0f(%.2f%%) failed=%.0f(%.2f%%) success_fail_ratio=%.3f average_trade_pnl=%.4f total_trades=%.0f",
-                    metrics["cumulative_pnl"],
-                    metrics["max_drawdown"],
-                    metrics["successful_trades"],
-                    metrics["win_rate"],
-                    metrics["failed_trades"],
-                    metrics["fail_rate"],
-                    metrics["success_to_failure_ratio"],
-                    metrics["average_trade_pnl"],
-                    metrics["total_trades"],
-                )
-            elif kind == "toplosers":
-                limit = int(parts[1]) if len(parts) == 2 else 10
-                logger.info("top_losing_trades=%s", analytics_api.top_losing_trades(limit=limit))
-            elif kind == "topwinners":
-                limit = int(parts[1]) if len(parts) == 2 else 10
-                logger.info("top_profitable_trades=%s", analytics_api.top_profitable_trades(limit=limit))
-            elif kind == "worstslip":
-                limit = int(parts[1]) if len(parts) == 2 else 10
-                logger.info("worst_slippage_trades=%s", analytics_api.worst_slippage_trades(limit=limit))
-            elif kind == "pnlcomp":
-                logger.info("pnl_by_component=%s", analytics_api.pnl_by_component())
-            elif kind == "fillquality":
-                logger.info("fill_quality_stats=%s", analytics_api.fill_quality_stats())
-            elif kind == "lossanalysis":
-                logger.info("trade_outcome_analysis=%s", analytics_api.trade_outcome_analysis())
-            elif kind == "analyticscounters":
-                logger.info(
-                    "analytics_counters=%s",
-                    {
-                        "total_trades_processed_for_analytics": analytics_counters[
-                            "total_trades_processed_for_analytics"
-                        ],
-                        "total_records_written": analytics_counters["total_records_written"],
-                    },
-                )
-            elif kind == "backfillanalytics":
-                limit = int(parts[1]) if len(parts) == 2 else 100
-                backfill_result = economics_store.backfill_trade_analytics(limit=limit)
-                logger.info("backfill_analytics_result=%s", backfill_result)
-            elif kind == "analyticsmissing":
-                limit = int(parts[1]) if len(parts) == 2 else 100
-                logger.info("analytics_missing_fills=%s", analytics_api.analytics_missing_fills(limit=limit))
-            elif kind == "entrycorr":
-                logger.info("entry_score_pnl_correlation=%s", analytics_api.entry_score_pnl_correlation())
-            elif kind == "cancelimpact":
-                logger.info("missed_pnl_by_cancel_reason=%s", analytics_api.missed_pnl_by_cancel_reason())
-            elif kind == "simprofile":
-                if len(parts) == 1:
-                    logger.info(
-                        "[SIM][PROFILE] active=%s config=%s",
-                        active_simulation_profile,
-                        gateway.simulation_config_snapshot(),
-                    )
-                    continue
-                if len(parts) != 2:
-                    logger.warning("Bad command format.")
-                    continue
-                if not simulation_mode:
-                    logger.warning("[SIM][PROFILE] ignored: SIMULATION_MODE is disabled")
-                    continue
-                requested_profile = normalize_simulation_profile(parts[1])
-                active_simulation_profile, runtime_params, _ = resolve_simulation_profile(
-                    base_params=simulation_stress_params,
-                    configured_profile=configured_simulation_profile,
-                    runtime_override_profile=requested_profile,
-                )
-                gateway.apply_simulation_config(
-                    simulation_slippage_bps=float(runtime_params["simulation_slippage_bps"]),
-                    simulation_slippage_max_bps=float(runtime_params["simulation_slippage_max_bps"]),
-                    simulation_volatility_slippage_multiplier=float(
-                        runtime_params["simulation_volatility_slippage_multiplier"]
-                    ),
-                    simulation_latency_network_ms=int(runtime_params["simulation_latency_network_ms"]),
-                    simulation_latency_exchange_ms=int(runtime_params["simulation_latency_exchange_ms"]),
-                    simulation_latency_jitter_ms=int(runtime_params["simulation_latency_jitter_ms"]),
-                    simulation_fill_participation=float(runtime_params["simulation_fill_participation"]),
-                    simulation_touch_fill_probability=float(runtime_params["simulation_touch_fill_probability"]),
-                    simulation_passive_fill_probability_scale=float(
-                        runtime_params["simulation_passive_fill_probability_scale"]
-                    ),
-                    simulation_adverse_selection_bias=float(runtime_params["simulation_adverse_selection_bias"]),
-                    profile_name=active_simulation_profile,
-                    source="runtime_command",
-                )
-            else:
-                logger.warning("Bad command format.")
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user.")
-    finally:
+        _marker_path = base_dir / "log" / "session_start_marker.txt"
+        _marker_path.parent.mkdir(parents=True, exist_ok=True)
+        _marker_path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+
+        _tok = load_sandbox_token(base_dir, _read_str)
+        if not _tok.strip():
+            raise RuntimeError("PREFLIGHT: T-Invest token not loaded (TINKOFF_TOKEN / settings.local.cfg TBankSandboxToken)")
+        verify_market_data_readonly(
+            token=_tok,
+            host=tbank_host,
+            instrument_id=tbank_instrument_id,
+            logger=logger,
+        )
+        log_event(
+            logger,
+            level=logging.INFO,
+            component="Preflight",
+            event="stream_ready",
+            detail="Tinkoff market-data unary OK; starting MarketDataStream (orders disabled)",
+        )
+
+        md_health = MdHealthMonitor(
+            market_data_engine=market_data_engine,
+            logger=logger,
+            interval_sec=5.0,
+        )
+        md_health.start()
         if failure_monitor is not None:
-            failure_monitor.stop()
-        time.sleep(0.2)
-        initiator.stop()
-        logging_runtime.listener.stop()
+            failure_monitor.start()
+        logger.info(
+            "[TBANK] data_provider=%s host=%s instrument_id=%s symbol=%s run_duration_sec=%s",
+            data_provider,
+            tbank_host,
+            tbank_instrument_id,
+            tbank_symbol,
+            tbank_run_duration_sec,
+        )
+        try:
+            run_tbank_sandbox_market_data(
+                token=tbank_token,
+                host=tbank_host,
+                instrument_id=tbank_instrument_id,
+                symbol=tbank_symbol,
+                orderbook_depth=tbank_depth,
+                include_trades=tbank_include_trades,
+                on_raw_market_data=market_data_engine.update_market_data,
+                logger=logger,
+                run_duration_sec=tbank_run_duration_sec,
+                reconnect_initial_delay_sec=tbank_md_reconnect_initial_sec,
+                reconnect_max_delay_sec=tbank_md_reconnect_max_sec,
+                stale_reconnect_sec=tbank_md_stale_reconnect_sec,
+            )
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user.")
+        finally:
+            if md_health is not None:
+                md_health.stop()
+            if failure_monitor is not None:
+                failure_monitor.stop()
+            logging_runtime.listener.stop()
+            try:
+                print_post_run_summary(base_dir)
+            except Exception as exc:
+                logger.warning("post_run_summary_failed: %s", exc)
+        return
+
+    raise RuntimeError(
+        f"Unsupported DataProvider={data_provider!r}. Use TINKOFF (or legacy TINKOFF_SANDBOX)."
+    )
 
 
 if __name__ == "__main__":

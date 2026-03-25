@@ -3,7 +3,7 @@ import sys
 
 
 def main() -> None:
-    # Keep root entrypoint, but route to the active FIX engine.
+    # Root entrypoint -> fix_engine/main.py::run
     fix_engine_dir = Path(__file__).resolve().parent / "fix_engine"
     if str(fix_engine_dir) not in sys.path:
         sys.path.insert(0, str(fix_engine_dir))

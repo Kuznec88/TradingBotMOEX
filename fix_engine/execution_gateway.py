@@ -4,16 +4,15 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import RLock
-from typing import Callable
+from typing import Any, Callable
 import re
 
-import quickfix as fix
-
-from execution_engine import ExecutionEngine
+from fix_shim import SyntheticExecutionReport
 from market_data.models import MarketData
 from order_manager import OrderManager
+from structured_logging import log_event
 from order_models import MarketType, OrderRequest
 from position_manager import PositionManager
 from risk_manager import RiskManager
@@ -35,13 +34,13 @@ class ExecutionGateway:
 
     def __init__(
         self,
-        equities_engine: ExecutionEngine,
-        forts_engine: ExecutionEngine,
+        equities_engine: Any,
+        forts_engine: Any,
         order_manager: OrderManager,
         logger: logging.Logger,
         simulation_mode: bool = False,
         get_latest_market_data: Callable[[str], MarketData | None] | None = None,
-        on_execution_report: Callable[[fix.Message, str], None] | None = None,
+        on_execution_report: Callable[[object, str], None] | None = None,
         risk_manager: RiskManager | None = None,
         position_manager: PositionManager | None = None,
         simulation_slippage_bps: float = 2.0,
@@ -54,14 +53,31 @@ class ExecutionGateway:
         simulation_touch_fill_probability: float = 0.15,
         simulation_passive_fill_probability_scale: float = 0.5,
         simulation_adverse_selection_bias: float = 0.35,
+        simulation_slippage_model: str = "DYNAMIC_BPS",
+        simulation_fixed_slippage_abs: float = 0.0,
+        simulation_spread_slippage_fraction: float = 0.25,
+        simulation_decision_to_send_min_ms: int = 5,
+        simulation_decision_to_send_max_ms: int = 20,
+        simulation_send_to_fill_min_ms: int = 50,
+        simulation_send_to_fill_max_ms: int = 200,
         simulation_rng: random.Random | None = None,
         account_by_market: dict[MarketType, str] | None = None,
+        execution_mode: str | None = None,
+        stream_book_fills: bool = False,
     ) -> None:
         self.equities_engine = equities_engine
         self.forts_engine = forts_engine
         self.order_manager = order_manager
         self.logger = logger
-        self.simulation_mode = simulation_mode
+        raw_mode = (execution_mode or ("PAPER_REAL_MARKET" if simulation_mode else "LIVE")).strip().upper()
+        if raw_mode == "SIMULATION":
+            raw_mode = "PAPER_REAL_MARKET"
+        if raw_mode not in {"LIVE", "PAPER_REAL_MARKET"}:
+            raise ValueError(f"Unsupported execution mode: {raw_mode}")
+        self.execution_mode = raw_mode
+        self._uses_local_sim_execution = self.execution_mode == "PAPER_REAL_MARKET"
+        # Keep compatibility with existing callers and checks.
+        self.simulation_mode = self._uses_local_sim_execution
         self.get_latest_market_data = get_latest_market_data
         self.on_execution_report = on_execution_report
         self.risk_manager = risk_manager
@@ -78,10 +94,24 @@ class ExecutionGateway:
             0.0, min(1.0, float(simulation_passive_fill_probability_scale))
         )
         self.simulation_adverse_selection_bias = max(0.0, min(1.0, float(simulation_adverse_selection_bias)))
+        self.simulation_slippage_model = str(simulation_slippage_model).strip().upper() or "DYNAMIC_BPS"
+        if self.simulation_slippage_model not in {"DYNAMIC_BPS", "FIXED_ABS", "SPREAD_FRACTION"}:
+            self.simulation_slippage_model = "DYNAMIC_BPS"
+        self.simulation_fixed_slippage_abs = max(0.0, float(simulation_fixed_slippage_abs))
+        self.simulation_spread_slippage_fraction = max(0.0, float(simulation_spread_slippage_fraction))
+        self.simulation_decision_to_send_min_ms = max(0, int(simulation_decision_to_send_min_ms))
+        self.simulation_decision_to_send_max_ms = max(
+            self.simulation_decision_to_send_min_ms, int(simulation_decision_to_send_max_ms)
+        )
+        self.simulation_send_to_fill_min_ms = max(0, int(simulation_send_to_fill_min_ms))
+        self.simulation_send_to_fill_max_ms = max(self.simulation_send_to_fill_min_ms, int(simulation_send_to_fill_max_ms))
         self._simulation_rng = simulation_rng or random.Random()
         self.account_by_market = account_by_market or {}
         self._pending_orders: dict[str, _PendingSimOrder] = {}
         self._last_mid_by_symbol: dict[str, float] = {}
+        self._last_bid_by_symbol: dict[str, float] = {}
+        self._last_ask_by_symbol: dict[str, float] = {}
+        self._stream_book_fills = bool(stream_book_fills)
         self._lock = RLock()
         self._trading_enabled = True
 
@@ -98,7 +128,7 @@ class ExecutionGateway:
                 request.qty,
             )
             raise RuntimeError(f"AccountMissing: market={request.market.value}")
-        if (not self.simulation_mode) and (not self._is_valid_account_format(account)):
+        if (not self._uses_local_sim_execution) and (not self._is_valid_account_format(account)):
             self.logger.error(
                 "[ORDER][REJECT] account_invalid_format market=%s symbol=%s account=%s",
                 request.market.value,
@@ -139,7 +169,7 @@ class ExecutionGateway:
                 )
                 raise RuntimeError(f"RiskRejected: {decision.reason}")
 
-        if self.simulation_mode:
+        if self._uses_local_sim_execution:
             cl_ord_id = self._simulate_send_order(request, qty, account)
             if self.risk_manager is not None and not request.bypass_risk:
                 self.risk_manager.on_order_accepted()
@@ -166,7 +196,7 @@ class ExecutionGateway:
         return cl_ord_id
 
     def cancel_order(self, cl_ord_id: str, market: MarketType = MarketType.EQUITIES) -> str:
-        if self.simulation_mode:
+        if self._uses_local_sim_execution:
             with self._lock:
                 pending = self._pending_orders.pop(cl_ord_id, None)
             if pending is not None:
@@ -193,12 +223,14 @@ class ExecutionGateway:
         return self.equities_engine.cancel_order(cl_ord_id)
 
     def on_market_data(self, data: MarketData) -> None:
-        if not self.simulation_mode:
+        if not self._uses_local_sim_execution:
             return
         self._simulate_match_pending_orders(data)
 
-    def simulation_config_snapshot(self) -> dict[str, float | int]:
+    def simulation_config_snapshot(self) -> dict[str, float | int | str]:
         return {
+            "execution_mode": self.execution_mode,
+            "stream_book_fills": bool(self._stream_book_fills),
             "simulation_slippage_bps": float(self.simulation_slippage_bps),
             "simulation_slippage_max_bps": float(self.simulation_slippage_max_bps),
             "simulation_volatility_slippage_multiplier": float(self.simulation_volatility_slippage_multiplier),
@@ -209,6 +241,13 @@ class ExecutionGateway:
             "simulation_touch_fill_probability": float(self.simulation_touch_fill_probability),
             "simulation_passive_fill_probability_scale": float(self.simulation_passive_fill_probability_scale),
             "simulation_adverse_selection_bias": float(self.simulation_adverse_selection_bias),
+            "simulation_slippage_model": self.simulation_slippage_model,
+            "simulation_fixed_slippage_abs": float(self.simulation_fixed_slippage_abs),
+            "simulation_spread_slippage_fraction": float(self.simulation_spread_slippage_fraction),
+            "simulation_decision_to_send_min_ms": int(self.simulation_decision_to_send_min_ms),
+            "simulation_decision_to_send_max_ms": int(self.simulation_decision_to_send_max_ms),
+            "simulation_send_to_fill_min_ms": int(self.simulation_send_to_fill_min_ms),
+            "simulation_send_to_fill_max_ms": int(self.simulation_send_to_fill_max_ms),
         }
 
     def apply_simulation_config(
@@ -245,7 +284,7 @@ class ExecutionGateway:
         self.logger.info(
             "[SIM][PROFILE] applied profile=%s source=%s slippage_bps=%s slippage_max_bps=%s vol_slippage_mult=%s "
             "latency_network_ms=%s latency_exchange_ms=%s latency_jitter_ms=%s fill_participation=%s "
-            "touch_fill_probability=%s passive_fill_scale=%s adverse_selection_bias=%s",
+            "touch_fill_probability=%s passive_fill_scale=%s adverse_selection_bias=%s slippage_model=%s fixed_abs=%s spread_fraction=%s",
             profile_name or "CUSTOM",
             source,
             cfg["simulation_slippage_bps"],
@@ -258,6 +297,9 @@ class ExecutionGateway:
             cfg["simulation_touch_fill_probability"],
             cfg["simulation_passive_fill_probability_scale"],
             cfg["simulation_adverse_selection_bias"],
+            cfg["simulation_slippage_model"],
+            cfg["simulation_fixed_slippage_abs"],
+            cfg["simulation_spread_slippage_fraction"],
         )
 
     def set_trading_enabled(self, enabled: bool, reason: str = "") -> None:
@@ -290,7 +332,21 @@ class ExecutionGateway:
         with self._lock:
             self._pending_orders[order.cl_ord_id] = pending
 
-        accept_latency_ms = self._sleep_with_latency()
+        log_event(
+            self.logger,
+            level=logging.INFO,
+            component="ExecutionGateway",
+            event="ORDER_CREATED",
+            correlation_id=order.cl_ord_id,
+            order_id=order.cl_ord_id,
+            side=pending.side,
+            price=float(pending.limit_price) if pending.limit_price is not None else 0.0,
+            size=float(pending.qty),
+            symbol=pending.symbol,
+            execution_mode=self.execution_mode,
+        )
+        accept_latency_ms = self._sleep_with_latency(stage="decision_to_send")
+        self.order_manager.set_exchange_ack_timestamp(order.cl_ord_id, datetime.now(timezone.utc))
         market_data = self.get_latest_market_data(request.symbol) if self.get_latest_market_data else None
         if market_data is not None:
             self._simulate_match_pending_orders(market_data)
@@ -320,15 +376,39 @@ class ExecutionGateway:
             pending_list = [p for p in self._pending_orders.values() if p.symbol == symbol and p.remaining > 0]
         if not pending_list:
             self._last_mid_by_symbol[symbol] = float(data.mid_price)
+            self._last_bid_by_symbol[symbol] = float(data.bid)
+            self._last_ask_by_symbol[symbol] = float(data.ask)
             return
 
         abs_return, move_dir = self._compute_short_term_move(symbol, data)
         available_qty = max(1.0, float(data.volume) * max(0.01, self.simulation_fill_participation))
         for pending in pending_list:
+            order = self.order_manager.get_order(pending.cl_ord_id)
+            if order is not None:
+                order_ref_ts = order.exchange_ack_at or order.created_at
+                # Book timestamp often trails host clock by milliseconds; strict `<` skips the
+                # first cross and leaves exit orders stuck indefinitely.
+                if data.timestamp < order_ref_ts:
+                    skew = order_ref_ts - data.timestamp
+                    if skew > timedelta(milliseconds=50):
+                        self.logger.error(
+                            "[SIM][LOOKAHEAD_VIOLATION] order_id=%s md_ts=%s order_ref_ts=%s skew_ms=%.1f",
+                            pending.cl_ord_id,
+                            data.timestamp.isoformat(),
+                            order_ref_ts.isoformat(),
+                            skew.total_seconds() * 1000.0,
+                        )
+                        continue
             if not self._is_crossed(pending, data, abs_return=abs_return, move_dir=move_dir):
                 continue
 
-            fill_qty = min(pending.remaining, available_qty)
+            if self._stream_book_fills:
+                cap = float(getattr(data, "ask_size" if pending.side == "1" else "bid_size", 0.0) or 0.0)
+                fill_qty = min(pending.remaining, cap) if cap > 0.0 else pending.remaining
+            else:
+                fill_qty = min(pending.remaining, available_qty)
+            if fill_qty <= 0.0:
+                continue
             fill_px, slip_bps = self._fill_price(pending, data, abs_return=abs_return, move_dir=move_dir)
             cum_qty = pending.qty - pending.remaining + fill_qty
             leaves_qty = max(0.0, pending.qty - cum_qty)
@@ -336,7 +416,12 @@ class ExecutionGateway:
             ord_status = "2" if is_full else "1"
             exec_type = "2" if is_full else "1"
 
-            fill_latency_ms = self._sleep_with_latency()
+            fill_latency_ms = self._sleep_with_latency(stage="send_to_fill")
+            fill_text = (
+                f"Stream book fill (bid={data.bid} ask={data.ask})"
+                if self._stream_book_fills
+                else f"Simulated fill latency_ms={fill_latency_ms} slippage_bps={slip_bps:.4f}"
+            )
             self._emit_execution_report(
                 cl_ord_id=pending.cl_ord_id,
                 symbol=pending.symbol,
@@ -348,7 +433,7 @@ class ExecutionGateway:
                 exec_type=exec_type,
                 last_qty=fill_qty,
                 last_px=fill_px,
-                text=f"Simulated fill latency_ms={fill_latency_ms} slippage_bps={slip_bps:.4f}",
+                text=fill_text,
             )
 
             with self._lock:
@@ -357,8 +442,57 @@ class ExecutionGateway:
                     if is_full:
                         self._pending_orders.pop(pending.cl_ord_id, None)
         self._last_mid_by_symbol[symbol] = float(data.mid_price)
+        self._last_bid_by_symbol[symbol] = float(data.bid)
+        self._last_ask_by_symbol[symbol] = float(data.ask)
+
+    @staticmethod
+    def _px_eps(data: MarketData) -> float:
+        m = float(data.mid_price)
+        return max(1e-9, abs(m) * 1e-10)
+
+    def _is_crossed_stream_book(self, pending: _PendingSimOrder, data: MarketData) -> bool:
+        symbol = data.symbol.upper()
+        prev_bid = self._last_bid_by_symbol.get(symbol)
+        prev_ask = self._last_ask_by_symbol.get(symbol)
+        eps = self._px_eps(data)
+        spr = float(data.spread or 0.0)
+        touch_band = max(eps, 0.25 * spr) if spr > 0.0 else eps
+        limit_px = pending.limit_price
+        if limit_px is None:
+            return True
+        lpx = float(limit_px)
+        if pending.side == "1":
+            if lpx + eps >= float(data.ask):
+                return True
+            if prev_bid is not None and abs(lpx - float(prev_bid)) <= touch_band:
+                if float(data.bid) < float(prev_bid) - eps:
+                    return True
+            return False
+        if lpx - eps <= float(data.bid):
+            return True
+        if prev_ask is not None and abs(lpx - float(prev_ask)) <= touch_band:
+            if float(data.ask) > float(prev_ask) + eps:
+                return True
+        return False
+
+    def _fill_price_stream_book(self, pending: _PendingSimOrder, data: MarketData) -> tuple[float, float]:
+        eps = self._px_eps(data)
+        lpx = pending.limit_price
+        if pending.side == "1":
+            if lpx is None:
+                return float(data.ask), 0.0
+            if float(lpx) + eps >= float(data.ask):
+                return float(min(float(lpx), float(data.ask))), 0.0
+            return float(min(float(lpx), float(data.bid))), 0.0
+        if lpx is None:
+            return float(data.bid), 0.0
+        if float(lpx) - eps <= float(data.bid):
+            return float(max(float(lpx), float(data.bid))), 0.0
+        return float(max(float(lpx), float(data.ask))), 0.0
 
     def _is_crossed(self, pending: _PendingSimOrder, data: MarketData, *, abs_return: float, move_dir: int) -> bool:
+        if self._stream_book_fills:
+            return self._is_crossed_stream_book(pending, data)
         if pending.limit_price is None:
             return True
         if pending.side == "1":
@@ -388,24 +522,41 @@ class ExecutionGateway:
     def _fill_price(
         self, pending: _PendingSimOrder, data: MarketData, *, abs_return: float, move_dir: int
     ) -> tuple[float, float]:
-        slip_bps = self._dynamic_slippage_bps(side=pending.side, abs_return=abs_return, move_dir=move_dir)
-        slip = slip_bps / 10000.0
+        if self._stream_book_fills:
+            return self._fill_price_stream_book(pending, data)
+        base = data.ask if pending.side == "1" else data.bid
+        if self.simulation_slippage_model == "FIXED_ABS":
+            slip_abs = self.simulation_fixed_slippage_abs
+            slip_bps = (slip_abs / base * 10000.0) if base > 0 else 0.0
+        elif self.simulation_slippage_model == "SPREAD_FRACTION":
+            slip_abs = max(0.0, float(data.spread) * self.simulation_spread_slippage_fraction)
+            slip_bps = (slip_abs / base * 10000.0) if base > 0 else 0.0
+        else:
+            slip_bps = self._dynamic_slippage_bps(side=pending.side, abs_return=abs_return, move_dir=move_dir)
+            slip_abs = base * (slip_bps / 10000.0)
         if pending.side == "1":
-            base = data.ask
-            px = base * (1.0 + slip)
+            px = base + slip_abs
             if pending.limit_price is not None:
                 px = min(px, pending.limit_price)
             return px, slip_bps
-        base = data.bid
-        px = base * (1.0 - slip)
+        px = base - slip_abs
         if pending.limit_price is not None:
             px = max(px, pending.limit_price)
         return px, slip_bps
 
-    def _sleep_with_latency(self) -> int:
-        total_ms = max(0, self.simulation_latency_network_ms) + max(0, self.simulation_latency_exchange_ms)
-        jitter = self._simulation_rng.randint(0, self.simulation_latency_jitter_ms)
-        elapsed = total_ms + jitter
+    def _sleep_with_latency(self, *, stage: str) -> int:
+        if self._stream_book_fills:
+            return 0
+        if stage == "decision_to_send":
+            lo = self.simulation_decision_to_send_min_ms
+            hi = self.simulation_decision_to_send_max_ms
+        elif stage == "send_to_fill":
+            lo = self.simulation_send_to_fill_min_ms
+            hi = self.simulation_send_to_fill_max_ms
+        else:
+            lo = max(0, self.simulation_latency_network_ms) + max(0, self.simulation_latency_exchange_ms)
+            hi = lo + self.simulation_latency_jitter_ms
+        elapsed = self._simulation_rng.randint(max(0, lo), max(lo, hi))
         time.sleep(elapsed / 1000.0)
         return elapsed
 
@@ -459,23 +610,25 @@ class ExecutionGateway:
             self.logger.info("[SIM] status fallback %s -> %s for %s", old, new, cl_ord_id)
             return
 
-        msg = fix.Message()
-        msg.getHeader().setField(fix.MsgType(fix.MsgType_ExecutionReport))
-        msg.setField(fix.ClOrdID(cl_ord_id))
-        msg.setField(fix.ExecID(f"{cl_ord_id}|{exec_type}|SIM"))
-        msg.setField(fix.OrderID(f"SIM-{cl_ord_id}"))
-        msg.setField(fix.Symbol(symbol))
-        msg.setField(fix.Side(side))
-        msg.setField(fix.OrderQty(float(order_qty)))
-        msg.setField(fix.CumQty(float(cum_qty)))
-        msg.setField(fix.LeavesQty(float(leaves_qty)))
-        msg.setField(fix.AvgPx(float(last_px) if cum_qty > 0 else 0.0))
-        msg.setField(fix.StringField(39, ord_status))
-        msg.setField(fix.StringField(150, exec_type))
-        msg.setField(fix.LastQty(float(last_qty)))
-        msg.setField(fix.LastPx(float(last_px)))
-        msg.setField(fix.Text(text))
-        self.on_execution_report(msg, "SIMULATION")
+        fields = {
+            35: "8",
+            1: "SIM-PAPER",
+            11: cl_ord_id,
+            17: f"{cl_ord_id}|{exec_type}|SIM",
+            37: f"SIM-{cl_ord_id}",
+            55: symbol,
+            54: str(side),
+            38: str(float(order_qty)),
+            14: str(float(cum_qty)),
+            151: str(float(leaves_qty)),
+            6: str(float(last_px) if cum_qty > 0 else 0.0),
+            39: ord_status,
+            150: exec_type,
+            32: str(float(last_qty)),
+            31: str(float(last_px)),
+            58: text,
+        }
+        self.on_execution_report(SyntheticExecutionReport(fields), "SYNTHETIC")
 
     @staticmethod
     def _normalize_side(side: str | int) -> str:
@@ -487,14 +640,14 @@ class ExecutionGateway:
         return "2"
 
     def _resolve_account(self, request: OrderRequest) -> str:
+        if self._uses_local_sim_execution:
+            return f"SIM-{request.market.value}-ACCOUNT"
         explicit = str(request.account).strip()
         if explicit:
             return explicit
         by_market = str(self.account_by_market.get(request.market, "")).strip()
         if by_market:
             return by_market
-        if self.simulation_mode:
-            return f"SIM-{request.market.value}-ACCOUNT"
         return ""
 
     @staticmethod

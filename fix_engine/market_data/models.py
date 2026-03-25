@@ -12,6 +12,8 @@ class MarketData:
     last: float
     volume: float
     timestamp: datetime
+    bid_size: float = 0.0
+    ask_size: float = 0.0
 
     @property
     def mid_price(self) -> float:

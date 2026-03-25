@@ -44,9 +44,9 @@ class JsonFormatter(logging.Formatter):
         "taskName",
     }
 
-    def __init__(self, simulation: bool) -> None:
+    def __init__(self, *, paper_execution: bool) -> None:
         super().__init__()
-        self._simulation = bool(simulation)
+        self._paper_execution = bool(paper_execution)
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -55,7 +55,7 @@ class JsonFormatter(logging.Formatter):
             "component": getattr(record, "component", record.name),
             "event": getattr(record, "event", "log"),
             "correlation_id": getattr(record, "correlation_id", ""),
-            "simulation": bool(getattr(record, "simulation", self._simulation)),
+            "paper_execution": bool(getattr(record, "paper_execution", self._paper_execution)),
             "message": record.getMessage(),
         }
         for key, value in record.__dict__.items():
@@ -74,7 +74,7 @@ class JsonFormatter(logging.Formatter):
 def configure_structured_logging(
     *,
     base_dir: Path,
-    simulation: bool,
+    paper_execution: bool,
     logger_name: str = "fix_engine",
     level: int = logging.INFO,
 ) -> StructuredLoggingRuntime:
@@ -90,7 +90,7 @@ def configure_structured_logging(
     queue_handler = QueueHandler(log_queue)
     logger.addHandler(queue_handler)
 
-    formatter = JsonFormatter(simulation=simulation)
+    formatter = JsonFormatter(paper_execution=paper_execution)
     file_handler = logging.FileHandler(log_dir / "fix_client.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
     console_handler = logging.StreamHandler(sys.stdout)
