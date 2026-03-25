@@ -322,8 +322,8 @@ class BasicMarketMaker:
         self._breakeven_trailing_offset_ticks = max(0.0, float(breakeven_trailing_offset_ticks))
         self._position_peak_mark = 0.0
         self._position_trailing_stop_price = 0.0
-        # Immediate move guard right after entry; 0 disables this fast-stop layer.
-        self._immediate_stop_ticks = 0
+        # Fast invalidation: if first tick goes against us -> exit immediately.
+        self._immediate_stop_ticks = 1
         self._max_immediate_loss = 0.0
         self._hard_max_loss_per_trade = 0.0  # set after _tick_size / _stop_loss below
         self._immediate_ticks_seen = 0
@@ -1157,6 +1157,8 @@ class BasicMarketMaker:
         self._cancel_side(self.sell_state, "FORCED_EXIT cancel sell exposure")
         close_side = "2" if qty > 0 else "1"
         close_qty = abs(qty)
+        # Force close as a marketable limit (aggressive, no market orders).
+        close_price = float(data.bid) if close_side == "2" else float(data.ask)
         try:
             forced_id = self.gateway.send_order(
                 OrderRequest(
@@ -1166,7 +1168,7 @@ class BasicMarketMaker:
                     account="",
                     market=self.market,
                     lot_size=1,
-                    price=None,
+                    price=close_price,
                     bypass_risk=True,
                 )
             )
@@ -2117,12 +2119,14 @@ class BasicMarketMaker:
 
     def _evaluate_entry_signal(self, *, latest: MarketData, now_mono: float) -> dict[str, object]:
         """
-        Single live strategy: VOLUME_FOLLOW.
-        We follow the market when top-of-book volume spikes and flow bias confirms direction.
+        Active momentum entry (NOT market making).
+        Decision is made BEFORE order placement, using:
+        - price_move_ticks: short-term velocity in ticks
+        - delta: aggressive buy volume - aggressive sell volume
+        - imbalance: order book imbalance
+        Hard filters first, then directional signal -> aggressive (marketable limit) order.
         """
-        if self._strategy_mode != "VOLUME_FOLLOW":
-            # Hard fallback: keep exactly one live path.
-            self._strategy_mode = "VOLUME_FOLLOW"
+        self._strategy_mode = "VOLUME_FOLLOW"
 
         spread = float(latest.spread)
         bid_size = float(getattr(latest, "bid_size", 0.0) or 0.0)
@@ -2130,26 +2134,32 @@ class BasicMarketMaker:
         tot = bid_size + ask_size
         imbalance = ((bid_size - ask_size) / (tot + 1e-12)) if tot > 0.0 else 0.0
         mid_price = float(latest.mid_price)
-        spread_med = self._current_spread_median()
+
+        # Velocity: ticks over last N updates
+        lookback_ticks = 4
+        price_move_ticks = 0.0
+        if len(self._entry_direction_mids) > lookback_ticks:
+            prev_px = float(self._entry_direction_mids[-(lookback_ticks + 1)])
+            price_move_ticks = (mid_price - prev_px) / max(1e-9, float(self._tick_size))
+
+        # Aggressive delta (flow): sum recent buy/sell "aggressive" volumes
+        window_sec = 0.50
+        buy_vol = 0.0
+        sell_vol = 0.0
+        for t_mono, b, s in list(self._trade_flow_window):
+            if (now_mono - float(t_mono)) <= window_sec:
+                buy_vol += float(b)
+                sell_vol += float(s)
+        delta = float(buy_vol - sell_vol)
+
+        # Adaptive absolute delta threshold based on recent top-of-book volume
+        avg_volume = float(self._avg_volume_before_current())
+        delta_threshold = max(1.0, avg_volume * 0.25)
 
         w100 = self._effective_signal_window_ms(100)
-        w500 = self._effective_signal_window_ms(500)
         w50 = self._effective_signal_window_ms(50)
         momentum_100ms = self._mid_delta_over_window(now_mono=now_mono, window_ms=w100)
-        momentum_500ms = self._mid_delta_over_window(now_mono=now_mono, window_ms=w500)
         momentum_50ms = self._mid_delta_over_window(now_mono=now_mono, window_ms=w50)
-
-        flow_bias_recent = self._recent_flow_bias()
-        flow_bias_tick = self._flow_bias_from_level1(latest)
-        flow_bias_signal = float(flow_bias_tick) if flow_bias_tick is not None else float(flow_bias_recent)
-
-        total_volume = float(max(0.0, tot))
-        avg_volume = float(self._avg_volume_before_current())
-        volume_spike = (
-            self._volume_spike_entry_enabled
-            and avg_volume > 0.0
-            and total_volume >= (self._volume_spike_multiplier * avg_volume)
-        )
 
         decision: dict[str, object] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -2158,67 +2168,74 @@ class BasicMarketMaker:
             "entry_type": "aggressive",
             "bid_price": float(latest.bid),
             "ask_price": float(latest.ask),
-            "microprice_edge": 0.0,
             "momentum_100ms": float(momentum_100ms) if momentum_100ms is not None else 0.0,
-            "momentum_500ms": float(momentum_500ms) if momentum_500ms is not None else 0.0,
             "momentum_50ms": float(momentum_50ms) if momentum_50ms is not None else 0.0,
-            "last_50ms_price_move": float(momentum_50ms) if momentum_50ms is not None else 0.0,
             "spread": spread,
             "bid_size": bid_size,
             "ask_size": ask_size,
             "imbalance": float(imbalance),
-            "flow_bias_signal": float(flow_bias_signal),
-            "total_volume": float(total_volume),
+            "total_volume": float(max(0.0, tot)),
             "avg_volume": float(avg_volume),
-            "volume_spike": bool(volume_spike),
-            "mid_price": mid_price,
+            "delta": float(delta),
+            "delta_threshold": float(delta_threshold),
+            "price_move_ticks": float(price_move_ticks),
             "entry_price": 0.0,
-            "spread_median": spread_med,
-            "spread_stable": (spread_med > 0 and spread <= (spread_med * 1.5)),
-            "t1_threshold": 0.0,
             "decision": "SKIP",
-            "reason": "volume_follow_wait",
-            "strategy_mode": "VOLUME_FOLLOW",
+            "reason": "no_trade",
+            "strategy_mode": "MOMENTUM_ACTIVE",
         }
 
-        if momentum_100ms is None or momentum_500ms is None or momentum_50ms is None:
-            decision["reason"] = "momentum_window_not_ready"
+        # -------------------------
+        # HARD ENTRY FILTERS
+        # -------------------------
+        if spread > 1.0:
+            decision["reason"] = "spread_gt_1"
             self._log_entry_decision(decision)
             return decision
-        if spread_med > 0.0 and spread > max(6.0, spread_med * 2.0):
-            decision["reason"] = "spread_too_wide"
+        if abs(price_move_ticks) < 1.5:
+            decision["reason"] = "price_move_ticks_lt_1p5"
             self._log_entry_decision(decision)
             return decision
-        if not volume_spike:
-            decision["reason"] = "no_volume_spike"
+        if abs(delta) < delta_threshold:
+            decision["reason"] = "delta_below_threshold"
             self._log_entry_decision(decision)
             return decision
-        if abs(flow_bias_signal) < float(self._volume_spike_flow_bias_abs_min):
-            decision["reason"] = "flow_bias_too_small"
+        if abs(float(imbalance)) < 0.2:
+            decision["reason"] = "imbalance_lt_0p2"
             self._log_entry_decision(decision)
             return decision
 
+        # -------------------------
+        # MOMENTUM ENTRY SIGNAL
+        # -------------------------
+        long_signal = price_move_ticks >= 1.5 and delta > delta_threshold and imbalance > 0.2
+        short_signal = price_move_ticks <= -1.5 and delta < -delta_threshold and imbalance < -0.2
+
+        # -------------------------
+        # EXECUTION: aggressive only
+        # -------------------------
         impulse_gate = 1.5 * float(self._tick_size)
-        if flow_bias_signal > 0.0 and momentum_100ms > 0.0:
-            if momentum_50ms < -impulse_gate:
+        if long_signal:
+            # short-term adverse filter
+            if (momentum_50ms or 0.0) < -impulse_gate:
                 decision["side"] = "BUY"
                 decision["reason"] = "short_impulse_against_long"
                 self._log_entry_decision(decision)
                 return decision
             decision["side"] = "BUY"
             decision["decision"] = "EXECUTE"
-            decision["reason"] = "volume_follow_long"
+            decision["reason"] = "mom_long"
             self._sync_aggressive_entry_price_for_side(decision)
             return decision
-        if flow_bias_signal < 0.0 and momentum_100ms < 0.0:
-            if momentum_50ms > impulse_gate:
+        if short_signal:
+            if (momentum_50ms or 0.0) > impulse_gate:
                 decision["side"] = "SELL"
                 decision["reason"] = "short_impulse_against_short"
                 self._log_entry_decision(decision)
                 return decision
             decision["side"] = "SELL"
             decision["decision"] = "EXECUTE"
-            decision["reason"] = "volume_follow_short"
+            decision["reason"] = "mom_short"
             self._sync_aggressive_entry_price_for_side(decision)
             return decision
 
