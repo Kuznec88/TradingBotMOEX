@@ -221,6 +221,12 @@ def run() -> None:
         min_entry_spread=_read_float(cfg_for_optional, "min_entry_spread", 1.0),
         max_entry_spread=_read_float(cfg_for_optional, "max_entry_spread", 3.0),
         entry_imbalance_threshold=_read_float(cfg_for_optional, "imbalance_threshold", 0.2),
+        entry_imbalance_threshold_long=_read_float(
+            cfg_for_optional, "imbalance_threshold_long", _read_float(cfg_for_optional, "imbalance_threshold", 0.2)
+        ),
+        entry_imbalance_threshold_short=_read_float(
+            cfg_for_optional, "imbalance_threshold_short", _read_float(cfg_for_optional, "imbalance_threshold", 0.2)
+        ),
         min_abs_imbalance=_read_float(cfg_for_optional, "min_abs_imbalance", 0.1),
         trend_lookback_ticks=_read_int(cfg_for_optional, "trend_lookback_ticks", 8),
         min_trend_move_ticks=_read_float(cfg_for_optional, "min_trend_move_ticks", 1.0),

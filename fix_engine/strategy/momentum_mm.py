@@ -95,6 +95,8 @@ class BasicMarketMaker:
         min_entry_spread: float = 1.0,  # ticks
         max_entry_spread: float = 3.0,  # ticks
         entry_imbalance_threshold: float = 0.2,
+        entry_imbalance_threshold_long: float | None = None,
+        entry_imbalance_threshold_short: float | None = None,
         min_abs_imbalance: float = 0.1,
         trend_lookback_ticks: int = 8,
         min_trend_move_ticks: float = 1.0,
@@ -130,7 +132,7 @@ class BasicMarketMaker:
 
         if self._mode == "AGGRESSIVE":
             base_max_spread = max(base_max_spread, 6.0)
-            base_score_thr = min(base_score_thr, 0.40)
+            base_score_thr = min(base_score_thr, 0.45)
         elif self._mode == "NORMAL":
             base_max_spread = max(base_max_spread, 5.0)
             base_score_thr = min(base_score_thr, 0.50)
@@ -143,6 +145,10 @@ class BasicMarketMaker:
         self._base_imbalance_threshold = max(0.0, float(imbalance_threshold))
         self._base_delta_threshold = max(0.0, float(base_delta_thr))
         self._base_score_threshold = max(0.0, float(base_score_thr))
+        # Preserve configured baselines (fallback relaxes thresholds; we may reset after a trade).
+        self._cfg_max_spread = float(self._base_max_spread)
+        self._cfg_delta_threshold = float(self._base_delta_threshold)
+        self._cfg_score_threshold = float(self._base_score_threshold)
 
         # Scoring weights
         wsum = max(1e-9, float(w_spread) + float(w_delta))
@@ -210,7 +216,9 @@ class BasicMarketMaker:
         # Minimal feature history (for debug/compat; strategy uses single-snapshot)
         self._mid_hist: deque[tuple[float, float]] = deque(maxlen=64)  # (mono_ms, mid)
         self._last_entry_place_monotonic = 0.0
-        self._last_signal_execute_mono = 0.0
+        # Prevent immediate fallback relaxation right after startup.
+        # Fallback is meant to apply only after `no_trade_fallback_minutes` of inactivity.
+        self._last_signal_execute_mono = time.monotonic()
 
         _ = entry_decision_sink
         _ = economics_store
@@ -228,7 +236,17 @@ class BasicMarketMaker:
         self._min_entry_spread = max(0.0, float(min_entry_spread))
         self._max_entry_spread = max(self._min_entry_spread, float(max_entry_spread))
         _ = imbalance_threshold  # legacy arg retained for back-compat (ignored)
-        self._imbalance_threshold = _clamp(float(entry_imbalance_threshold), 0.0, 1.0)
+        base_imb = _clamp(float(entry_imbalance_threshold), 0.0, 1.0)
+        self._imbalance_threshold_long = (
+            _clamp(float(entry_imbalance_threshold_long), 0.0, 1.0)
+            if entry_imbalance_threshold_long is not None
+            else base_imb
+        )
+        self._imbalance_threshold_short = (
+            _clamp(float(entry_imbalance_threshold_short), 0.0, 1.0)
+            if entry_imbalance_threshold_short is not None
+            else base_imb
+        )
         self._min_abs_imbalance = _clamp(float(min_abs_imbalance), 0.0, 1.0)
         self._trend_lookback = max(2, int(trend_lookback_ticks))
         self._min_trend_move_ticks = max(0.0, float(min_trend_move_ticks))
@@ -301,6 +319,13 @@ class BasicMarketMaker:
                 )
                 if self._risk_manager is not None:
                     self._risk_manager.on_trade_result(net_pnl=float(pnl))
+            # After any closed trade, reset fallback-relaxed entry thresholds back to configured.
+            # This keeps fallback as a temporary "wake-up" mechanism, not a permanent mode change.
+            self._base_delta_threshold = float(self._cfg_delta_threshold)
+            self._base_score_threshold = float(self._cfg_score_threshold)
+            self._base_max_spread = float(self._cfg_max_spread)
+            self._fallback_adjustments_done = 0
+            self._last_fallback_adjust_mono = 0.0
             self._entry_price = 0.0
             self._entry_monotonic = 0.0
             self._entry_cl_ord_id = ""
@@ -471,10 +496,10 @@ class BasicMarketMaker:
             dir_delta = _sign(delta)
             dir_trend = _sign(trend_ticks) if abs(trend_ticks) >= self._min_trend_move_ticks else 0
 
-            if dir_imb > 0 and imbalance >= self._imbalance_threshold and dir_delta > 0 and dir_trend > 0:
+            if dir_imb > 0 and imbalance >= self._imbalance_threshold_long and dir_delta > 0 and dir_trend > 0:
                 decision = "LONG"
                 reason = "score_pass_confirmed"
-            elif dir_imb < 0 and imbalance <= -self._imbalance_threshold and dir_delta < 0 and dir_trend < 0:
+            elif dir_imb < 0 and imbalance <= -self._imbalance_threshold_short and dir_delta < 0 and dir_trend < 0:
                 decision = "SHORT"
                 reason = "score_pass_confirmed"
             else:
@@ -490,6 +515,7 @@ class BasicMarketMaker:
             "reason": reason,
             "score": float(score),
             "score_thr": float(score_thr),
+            "cfg_score_thr": float(self._cfg_score_threshold),
             "spread": float(spread),
             "max_spread": float(max_spread),
             "mid": float(mid_price),
@@ -501,6 +527,9 @@ class BasicMarketMaker:
             "need_spread": float(max(0.0, spread - max_spread)),
             "need_delta": float(max(0.0, delta_thr - abs(delta))),
             "delta_thr": float(delta_thr),
+            "cfg_delta_thr": float(self._cfg_delta_threshold),
+            "fallback_step": str(self._fallback_adjustments_done),
+            "fallback_max": str(self._fallback_max_adjustments),
         }
         return decision, row
 
@@ -531,21 +560,25 @@ class BasicMarketMaker:
 
     def _log_decision(self, row: dict[str, float | str]) -> None:
         self.logger.info(
-            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f spread=%.2f/%.2f mid=%.4f delta=%.2f/%.2f delta_score=%.3f imb=%.3f trend=%.2f need(delta=%.2f spread=%.2f)",
+            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f(c%.3f) spread=%.2f/%.2f mid=%.4f delta=%.2f/%.2f(c%.2f) delta_score=%.3f imb=%.3f trend=%.2f fb=%s/%s need(delta=%.2f spread=%.2f)",
             str(row.get("symbol", "")),
             str(row.get("mode", "")),
             str(row.get("decision", "")),
             str(row.get("reason", "")),
             float(row.get("score", 0.0)),
             float(row.get("score_thr", 0.0)),
+            float(row.get("cfg_score_thr", 0.0)),
             float(row.get("spread", 0.0)),
             float(row.get("max_spread", 0.0)),
             float(row.get("mid", 0.0)),
             float(row.get("delta", 0.0)),
             float(row.get("delta_thr", 0.0)),
+            float(row.get("cfg_delta_thr", 0.0)),
             float(row.get("delta_score", 0.0)),
             float(row.get("imbalance", 0.0)),
             float(row.get("trend_ticks", 0.0)),
+            str(row.get("fallback_step", "")),
+            str(row.get("fallback_max", "")),
             float(row.get("need_delta", 0.0)),
             float(row.get("need_spread", 0.0)),
         )
