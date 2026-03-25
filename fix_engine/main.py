@@ -806,140 +806,19 @@ def run() -> None:
     ):
         # Derive stop-loss (PnL units) from virtual account constraints.
         max_loss_per_trade = float(virtual_account_start_balance) * float(virtual_account_max_loss_fraction)
-    mm_volatility_window_ticks = _read_int(cfg_for_optional, "MMVolatilityWindowTicks", 20)
-    mm_max_short_term_volatility = _read_float(cfg_for_optional, "MMMaxShortTermVolatility", 0.0)
-    mm_cancel_on_high_volatility = _read_bool(cfg_for_optional, "MMCancelOnHighVolatility", True)
-    mm_resting_order_timeout_sec = _read_float(cfg_for_optional, "MMRestingOrderTimeoutSec", 2.0)
     mm_tick_size = _read_float(cfg_for_optional, "MMTickSize", 0.01)
-    mm_replace_threshold_ticks = _read_int(cfg_for_optional, "MMReplaceThresholdTicks", 2)
-    mm_replace_cancel_threshold_ticks = _read_float(
-        cfg_for_optional, "MMReplaceCancelThresholdTicks", float(mm_replace_threshold_ticks)
-    )
-    mm_replace_keep_threshold_ticks = _read_float(
-        cfg_for_optional, "MMReplaceKeepThresholdTicks", max(0.0, float(mm_replace_threshold_ticks) * 0.5)
-    )
-    mm_replace_persist_ms = _read_int(cfg_for_optional, "MMReplacePersistMs", 220)
-    mm_adverse_move_cancel_ticks = _read_int(cfg_for_optional, "MMAdverseMoveCancelTicks", 3)
-    mm_fast_cancel_keep_ticks = _read_float(cfg_for_optional, "MMFastCancelKeepTicks", 1.5)
-    mm_fast_cancel_persist_ms = _read_int(cfg_for_optional, "MMFastCancelPersistMs", 180)
-    mm_price_tolerance_ticks = _read_float(cfg_for_optional, "MMPriceToleranceTicks", 0.0)
-    mm_price_tolerance_pct = _read_float(cfg_for_optional, "MMPriceTolerancePct", 0.0)
-    mm_min_order_lifetime_ms = _read_int(cfg_for_optional, "MMMinOrderLifetimeMs", 200)
-    mm_cancel_replace_cooldown_ms = _read_int(cfg_for_optional, "MMCancelReplaceCooldownMs", 120)
-    mm_entry_min_spread = _read_float(cfg_for_optional, "MMEntryMinSpread", 0.0)
-    mm_entry_stability_window_ticks = _read_int(cfg_for_optional, "MMEntryStabilityWindowTicks", 8)
-    mm_entry_max_bid_ask_move_ticks = _read_float(cfg_for_optional, "MMEntryMaxBidAskMoveTicks", 2.0)
-    mm_entry_anti_trend_threshold = _read_float(cfg_for_optional, "MMEntryAntiTrendThreshold", 0.0)
-    mm_entry_direction_window_ticks = _read_int(cfg_for_optional, "MMEntryDirectionWindowTicks", 12)
-    mm_entry_direction_min_move_ticks = _read_float(cfg_for_optional, "MMEntryDirectionMinMoveTicks", 1.0)
-    mm_trade_cooldown_ms = _read_int(cfg_for_optional, "MMTradeCooldownMs", 300)
-    mm_entry_min_place_interval_ms = _read_int(cfg_for_optional, "MMEntryMinPlaceIntervalMs", 200)
     mm_one_position_only = _read_bool(cfg_for_optional, "MMOnePositionOnly", True)
-    mm_reversal_enabled = _read_bool(cfg_for_optional, "MMReversalEnabled", True)
-    mm_reversal_confirmation_updates = _read_int(cfg_for_optional, "MMReversalConfirmationUpdates", 3)
-    mm_reversal_min_trend_strength = _read_float(cfg_for_optional, "MMReversalMinTrendStrength", 0.0008)
-    mm_reversal_min_hold_ms = _read_int(cfg_for_optional, "MMReversalMinHoldMs", 120000)
-    mm_reversal_cooldown_ms = _read_int(cfg_for_optional, "MMReversalCooldownMs", 120000)
-    mm_weekly_trend_enabled = _read_bool(cfg_for_optional, "MMWeeklyTrendEnabled", True)
-    mm_weekly_trend_days = _read_float(cfg_for_optional, "MMWeeklyTrendDays", 7.0)
-    mm_weekly_trend_threshold_pct = _read_float(cfg_for_optional, "MMWeeklyTrendThresholdPct", 0.5)
-    mm_weekly_trend_refresh_sec = _read_float(cfg_for_optional, "MMWeeklyTrendRefreshSec", 30.0)
-    mm_volume_move_corr_enabled = _read_bool(cfg_for_optional, "MMVolumeMoveCorrEnabled", False)
-    mm_volume_move_corr_lookback_days = _read_float(cfg_for_optional, "MMVolumeMoveCorrLookbackDays", 14.0)
-    mm_volume_move_corr_bar_minutes = _read_int(cfg_for_optional, "MMVolumeMoveCorrBarMinutes", 5)
-    mm_volume_move_corr_min_samples = _read_int(cfg_for_optional, "MMVolumeMoveCorrMinSamples", 500)
-    mm_volume_move_corr_threshold = _read_float(cfg_for_optional, "MMVolumeMoveCorrThreshold", 0.15)
-    mm_volume_move_corr_refresh_sec = _read_float(cfg_for_optional, "MMVolumeMoveCorrRefreshSec", 60.0)
-    mm_five_min_entry_gate_enabled = _read_bool(cfg_for_optional, "MMFiveMinEntryGateEnabled", True)
-    mm_five_min_impulse_min_ticks = _read_float(cfg_for_optional, "MMFiveMinImpulseMinTicks", 0.5)
-    mm_five_min_volume_ratio_min = _read_float(cfg_for_optional, "MMFiveMinVolumeRatioMin", 1.05)
-    mm_trend_continuation_enabled = _read_bool(cfg_for_optional, "MMTrendContinuationEnabled", True)
-    mm_trend_continuation_confirm_updates = _read_int(cfg_for_optional, "MMTrendContinuationConfirmUpdates", 3)
-    mm_trend_continuation_min_move_ticks = _read_float(cfg_for_optional, "MMTrendContinuationMinMoveTicks", 1.0)
-    mm_flow_bias_window_ticks = _read_int(cfg_for_optional, "MMFlowBiasWindowTicks", 12)
-    mm_long_flow_bias_min = _read_float(cfg_for_optional, "MMLongFlowBiasMin", 0.05)
-    mm_long_trend_bias_min_ticks = _read_float(cfg_for_optional, "MMLongTrendBiasMinTicks", 0.75)
-    mm_long_impulse_override_ticks = _read_float(cfg_for_optional, "MMLongImpulseOverrideTicks", 3.0)
-    mm_short_flow_bias_max = _read_float(cfg_for_optional, "MMShortFlowBiasMax", 0.20)
-    mm_short_trend_bias_min_ticks = _read_float(cfg_for_optional, "MMShortTrendBiasMinTicks", 0.50)
-    mm_volume_flow_override_ticks = _read_float(cfg_for_optional, "MMVolumeFlowOverrideTicks", 1.50)
-    mm_volume_spike_entry_enabled = _read_bool(cfg_for_optional, "MMVolumeSpikeEntryEnabled", True)
-    mm_volume_spike_window_ticks = _read_int(cfg_for_optional, "MMVolumeSpikeWindowTicks", 24)
-    mm_volume_spike_multiplier = _read_float(cfg_for_optional, "MMVolumeSpikeMultiplier", 2.0)
-    mm_volume_spike_flow_bias_abs_min = _read_float(cfg_for_optional, "MMVolumeSpikeFlowBiasAbsMin", 0.20)
-    mm_momentum_exit_enabled = _read_bool(cfg_for_optional, "MMMomentumExitEnabled", True)
     mm_ignore_duplicate_ticks_ms = _read_int(cfg_for_optional, "MMIgnoreDuplicateTicksMs", 120)
     mm_decision_min_mid_move_ticks = _read_float(cfg_for_optional, "MMDecisionMinMidMoveTicks", 0.5)
     mm_tray_price_every_sec = _read_float(cfg_for_optional, "MMTrayPriceEverySec", 3.0)
     mm_take_profit_per_trade = _read_float(cfg_for_optional, "MMTakeProfitPerTrade", 4.0)
-    mm_dynamic_profit_target_enabled = _read_bool(cfg_for_optional, "MMDynamicProfitTargetEnabled", True)
-    mm_dynamic_profit_target_vol_multiplier = _read_float(
-        cfg_for_optional, "MMDynamicProfitTargetVolMultiplier", 1.8
-    )
-    mm_dynamic_profit_target_momentum_weight = _read_float(
-        cfg_for_optional, "MMDynamicProfitTargetMomentumWeight", 0.35
-    )
-    mm_dynamic_profit_target_flow_weight = _read_float(
-        cfg_for_optional, "MMDynamicProfitTargetFlowWeight", 0.60
-    )
-    mm_dynamic_profit_target_trend_weight = _read_float(
-        cfg_for_optional, "MMDynamicProfitTargetTrendWeight", 0.45
-    )
-    mm_dynamic_profit_target_min = _read_float(cfg_for_optional, "MMDynamicProfitTargetMin", 2.0)
-    mm_dynamic_profit_target_max = _read_float(cfg_for_optional, "MMDynamicProfitTargetMax", 30.0)
     mm_breakeven_trailing_offset_ticks = _read_float(cfg_for_optional, "MMBreakevenTrailingOffsetTicks", 5.0)
-    mm_entry_score_threshold = _read_float(cfg_for_optional, "MMEntryScoreThreshold", 0.6)
-    mm_entry_score_spread_threshold = _read_float(cfg_for_optional, "MMEntryScoreSpreadThreshold", 0.02)
-    mm_entry_score_w_spread = _read_float(cfg_for_optional, "MMEntryScoreWSpread", 0.35)
-    mm_entry_score_w_stability = _read_float(cfg_for_optional, "MMEntryScoreWStability", 0.25)
-    mm_entry_score_w_trend = _read_float(cfg_for_optional, "MMEntryScoreWTrend", 0.25)
-    mm_entry_score_w_imbalance = _read_float(cfg_for_optional, "MMEntryScoreWImbalance", 0.15)
-    mm_entry_score_cooldown_penalty_max = _read_float(
-        cfg_for_optional, "MMEntryScoreCooldownPenaltyMax", 0.35
-    )
-    mm_adaptive_learning_enabled = _read_bool(cfg_for_optional, "MMAdaptiveEntryLearningEnabled", False)
-    mm_adaptive_learning_window = _read_int(cfg_for_optional, "MMAdaptiveEntryLearningWindow", 100)
-    mm_adaptive_learning_min_bin_trades = _read_int(cfg_for_optional, "MMAdaptiveEntryLearningMinBinTrades", 10)
-    mm_adaptive_learning_step_up = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningStepUp", 0.01)
-    mm_adaptive_learning_step_down = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningStepDown", 0.01)
-    mm_adaptive_learning_max_step_per_update = _read_float(
-        cfg_for_optional, "MMAdaptiveEntryLearningMaxStepPerUpdate", 0.02
-    )
-    mm_adaptive_learning_threshold_min = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningThresholdMin", 0.4)
-    mm_adaptive_learning_threshold_max = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningThresholdMax", 0.95)
-    mm_adaptive_learning_drift_alert = _read_float(cfg_for_optional, "MMAdaptiveEntryLearningDriftAlert", 0.20)
-    mm_adaptive_learning_perf_alert_delta = _read_float(
-        cfg_for_optional, "MMAdaptiveEntryLearningPerfAlertDelta", 0.15
-    )
-    mm_trend_window_ticks = _read_int(cfg_for_optional, "MMTrendWindowTicks", 12)
-    mm_trend_strength_threshold = _read_float(cfg_for_optional, "MMTrendStrengthThreshold", 0.0)
-    mm_cancel_on_strong_trend = _read_bool(cfg_for_optional, "MMCancelOnStrongTrend", False)
-    mm_post_fill_horizon_ms = _read_int(cfg_for_optional, "MMPostFillHorizonMs", 200)
-    mm_adverse_fill_window = _read_int(cfg_for_optional, "MMAdverseFillWindow", 25)
-    mm_adverse_fill_rate_threshold = _read_float(cfg_for_optional, "MMAdverseFillRateThreshold", 0.65)
-    mm_defensive_quote_offset_ticks = _read_int(cfg_for_optional, "MMDefensiveQuoteOffsetTicks", 1)
-    mm_decision_confirmation_updates = _read_int(cfg_for_optional, "MMDecisionConfirmationUpdates", 2)
-    mm_min_decision_interval_ms = _read_int(cfg_for_optional, "MMMinDecisionIntervalMs", 150)
-    mm_decision_batch_ticks = _read_int(cfg_for_optional, "MMDecisionBatchTicks", 3)
-    mm_cancel_impact_horizon_ms = _read_int(cfg_for_optional, "MMCancelImpactHorizonMs", 500)
-    mm_cancel_reason_summary_every = _read_int(cfg_for_optional, "MMCancelReasonSummaryEvery", 20)
-    mm_disable_price_move_cancel = _read_bool(cfg_for_optional, "MMDisablePriceMoveCancel", False)
-    mm_microprice_edge_threshold = _read_float(cfg_for_optional, "MMMicropriceEdgeThreshold", 0.0002)
-    mm_spread_median_window_ticks = _read_int(cfg_for_optional, "MMSpreadMedianWindowTicks", 64)
-    mm_anti_adverse_window_ms = _read_int(cfg_for_optional, "MMAntiAdverseWindowMs", 50)
-    mm_kpi_eval_every_trades = _read_int(cfg_for_optional, "MMKpiEvalEveryTrades", 50)
-    mm_kpi_threshold_step = _read_float(cfg_for_optional, "MMKpiThresholdStep", 0.0001)
     mm_position_policy_enabled = _read_bool(cfg_for_optional, "MMPositionPolicyEnabled", False)
     mm_adaptive_targets_path_raw = _read_str(cfg_for_optional, "MMAdaptiveTargetsPath", "")
     mm_adaptive_targets_path = ""
     if mm_adaptive_targets_path_raw.strip():
         _mm_at = Path(mm_adaptive_targets_path_raw.strip())
         mm_adaptive_targets_path = str(_mm_at if _mm_at.is_absolute() else base_dir / _mm_at)
-    mm_learning_patch_path_raw = _read_str(cfg_for_optional, "MMLearningPatchStatePath", "")
-    mm_learning_patch_path = ""
-    if mm_learning_patch_path_raw.strip():
-        _mm_lp = Path(mm_learning_patch_path_raw.strip())
-        mm_learning_patch_path = str(_mm_lp if _mm_lp.is_absolute() else base_dir / _mm_lp)
     mm_strategy_mode = (_read_str(cfg_for_optional, "MMStrategyMode", "MOMENTUM_BREAKOUT").strip().upper() or "MOMENTUM_BREAKOUT")
     mm_momentum_params_path_raw = _read_str(cfg_for_optional, "MMMomentumParamsPath", "")
     mm_momentum_params_path = ""
@@ -1040,180 +919,37 @@ def run() -> None:
             virtual_account_max_loss_fraction=virtual_account_max_loss_fraction,
             entry_forecast_profit_enabled=entry_forecast_profit_enabled,
             entry_forecast_alignment_min=entry_forecast_alignment_min,
-            volatility_window_ticks=mm_volatility_window_ticks,
-            max_short_term_volatility=mm_max_short_term_volatility,
-            cancel_on_high_volatility=mm_cancel_on_high_volatility,
-            resting_order_timeout_sec=mm_resting_order_timeout_sec,
             tick_size=mm_tick_size,
-            replace_threshold_ticks=mm_replace_threshold_ticks,
-            replace_cancel_threshold_ticks=mm_replace_cancel_threshold_ticks,
-            replace_keep_threshold_ticks=mm_replace_keep_threshold_ticks,
-            replace_persist_ms=mm_replace_persist_ms,
-            adverse_move_cancel_ticks=mm_adverse_move_cancel_ticks,
-            fast_cancel_keep_ticks=mm_fast_cancel_keep_ticks,
-            fast_cancel_persist_ms=mm_fast_cancel_persist_ms,
-            price_tolerance_ticks=mm_price_tolerance_ticks,
-            price_tolerance_pct=mm_price_tolerance_pct,
-            min_order_lifetime_ms=mm_min_order_lifetime_ms,
-            cancel_replace_cooldown_ms=mm_cancel_replace_cooldown_ms,
-            trend_window_ticks=mm_trend_window_ticks,
-            trend_strength_threshold=mm_trend_strength_threshold,
-            cancel_on_strong_trend=mm_cancel_on_strong_trend,
-            post_fill_horizon_ms=mm_post_fill_horizon_ms,
-            adverse_fill_window=mm_adverse_fill_window,
-            adverse_fill_rate_threshold=mm_adverse_fill_rate_threshold,
-            defensive_quote_offset_ticks=mm_defensive_quote_offset_ticks,
-            decision_confirmation_updates=mm_decision_confirmation_updates,
-            min_decision_interval_ms=mm_min_decision_interval_ms,
-            decision_batch_ticks=mm_decision_batch_ticks,
-            entry_min_spread=mm_entry_min_spread,
-            entry_stability_window_ticks=mm_entry_stability_window_ticks,
-            entry_max_bid_ask_move_ticks=mm_entry_max_bid_ask_move_ticks,
-            entry_anti_trend_threshold=mm_entry_anti_trend_threshold,
-            entry_direction_window_ticks=mm_entry_direction_window_ticks,
-            entry_direction_min_move_ticks=mm_entry_direction_min_move_ticks,
-            trade_cooldown_ms=mm_trade_cooldown_ms,
-            entry_min_place_interval_ms=mm_entry_min_place_interval_ms,
             one_position_only=mm_one_position_only,
-            reversal_enabled=mm_reversal_enabled,
-            reversal_confirmation_updates=mm_reversal_confirmation_updates,
-            reversal_min_trend_strength=mm_reversal_min_trend_strength,
-            reversal_min_hold_ms=mm_reversal_min_hold_ms,
-            reversal_cooldown_ms=mm_reversal_cooldown_ms,
-            weekly_trend_enabled=mm_weekly_trend_enabled,
-            weekly_trend_db_path=str(quote_history_db),
-            weekly_trend_days=mm_weekly_trend_days,
-            weekly_trend_threshold_pct=mm_weekly_trend_threshold_pct,
-            weekly_trend_refresh_sec=mm_weekly_trend_refresh_sec,
-            volume_move_corr_enabled=mm_volume_move_corr_enabled,
-            volume_move_corr_db_path=str(quote_history_db),
-            volume_move_corr_lookback_days=mm_volume_move_corr_lookback_days,
-            volume_move_corr_bar_minutes=mm_volume_move_corr_bar_minutes,
-            volume_move_corr_min_samples=mm_volume_move_corr_min_samples,
-            volume_move_corr_threshold=mm_volume_move_corr_threshold,
-            volume_move_corr_refresh_sec=mm_volume_move_corr_refresh_sec,
-            five_min_entry_gate_enabled=mm_five_min_entry_gate_enabled,
-            five_min_impulse_min_ticks=mm_five_min_impulse_min_ticks,
-            five_min_volume_ratio_min=mm_five_min_volume_ratio_min,
-            trend_continuation_enabled=mm_trend_continuation_enabled,
-            trend_continuation_confirm_updates=mm_trend_continuation_confirm_updates,
-            trend_continuation_min_move_ticks=mm_trend_continuation_min_move_ticks,
-            flow_bias_window_ticks=mm_flow_bias_window_ticks,
-            long_flow_bias_min=mm_long_flow_bias_min,
-            long_trend_bias_min_ticks=mm_long_trend_bias_min_ticks,
-            long_impulse_override_ticks=mm_long_impulse_override_ticks,
-            short_flow_bias_max=mm_short_flow_bias_max,
-            short_trend_bias_min_ticks=mm_short_trend_bias_min_ticks,
-            volume_flow_override_ticks=mm_volume_flow_override_ticks,
-            volume_spike_entry_enabled=mm_volume_spike_entry_enabled,
-            volume_spike_window_ticks=mm_volume_spike_window_ticks,
-            volume_spike_multiplier=mm_volume_spike_multiplier,
-            volume_spike_flow_bias_abs_min=mm_volume_spike_flow_bias_abs_min,
-            momentum_exit_enabled=mm_momentum_exit_enabled,
             ignore_duplicate_ticks_ms=mm_ignore_duplicate_ticks_ms,
             decision_min_mid_move_ticks=mm_decision_min_mid_move_ticks,
             tray_price_every_sec=mm_tray_price_every_sec,
             take_profit_per_trade=mm_take_profit_per_trade,
-            dynamic_profit_target_enabled=mm_dynamic_profit_target_enabled,
-            dynamic_profit_target_vol_multiplier=mm_dynamic_profit_target_vol_multiplier,
-            dynamic_profit_target_momentum_weight=mm_dynamic_profit_target_momentum_weight,
-            dynamic_profit_target_flow_weight=mm_dynamic_profit_target_flow_weight,
-            dynamic_profit_target_trend_weight=mm_dynamic_profit_target_trend_weight,
-            dynamic_profit_target_min=mm_dynamic_profit_target_min,
-            dynamic_profit_target_max=mm_dynamic_profit_target_max,
             breakeven_trailing_offset_ticks=mm_breakeven_trailing_offset_ticks,
-            entry_score_threshold=mm_entry_score_threshold,
-            entry_score_spread_threshold=mm_entry_score_spread_threshold,
-            entry_score_w_spread=mm_entry_score_w_spread,
-            entry_score_w_stability=mm_entry_score_w_stability,
-            entry_score_w_trend=mm_entry_score_w_trend,
-            entry_score_w_imbalance=mm_entry_score_w_imbalance,
-            entry_score_cooldown_penalty_max=mm_entry_score_cooldown_penalty_max,
-            adaptive_entry_learning_enabled=mm_adaptive_learning_enabled,
-            adaptive_entry_learning_window=mm_adaptive_learning_window,
-            adaptive_entry_learning_min_bin_trades=mm_adaptive_learning_min_bin_trades,
-            adaptive_entry_learning_step_up=mm_adaptive_learning_step_up,
-            adaptive_entry_learning_step_down=mm_adaptive_learning_step_down,
-            adaptive_entry_learning_max_step_per_update=mm_adaptive_learning_max_step_per_update,
-            adaptive_entry_learning_threshold_min=mm_adaptive_learning_threshold_min,
-            adaptive_entry_learning_threshold_max=mm_adaptive_learning_threshold_max,
-            adaptive_entry_learning_drift_alert=mm_adaptive_learning_drift_alert,
-            adaptive_entry_learning_perf_alert_delta=mm_adaptive_learning_perf_alert_delta,
-            cancel_impact_horizon_ms=mm_cancel_impact_horizon_ms,
-            cancel_reason_summary_every=mm_cancel_reason_summary_every,
-            disable_price_move_cancel=mm_disable_price_move_cancel,
-            microprice_edge_threshold=mm_microprice_edge_threshold,
-            spread_median_window_ticks=mm_spread_median_window_ticks,
-            anti_adverse_window_ms=mm_anti_adverse_window_ms,
-            kpi_eval_every_trades=mm_kpi_eval_every_trades,
-            kpi_threshold_step=mm_kpi_threshold_step,
-            cancel_analytics_sink=economics_store.insert_cancel_analytics,
             entry_decision_sink=economics_store.insert_entry_decisions,
             position_policy_enabled=mm_position_policy_enabled,
             adaptive_targets_path=mm_adaptive_targets_path,
-            learning_patch_path=mm_learning_patch_path,
             economics_store=economics_store,
             strategy_mode=mm_strategy_mode,
             momentum_params_path=mm_momentum_params_path,
         )
         market_data_engine.subscribe(market_maker.on_market_data)
         logger.info(
-            "[MM] enabled symbol=%s lot=%s market=%s max_loss_per_trade=%s mm_vol_threshold=%s mm_vol_window=%s mm_vol_cancel=%s mm_rest_timeout_sec=%s mm_tick_size=%s mm_replace_ticks=%s mm_replace_cancel_ticks=%s mm_replace_keep_ticks=%s mm_replace_persist_ms=%s mm_adverse_cancel_ticks=%s mm_fast_cancel_keep_ticks=%s mm_fast_cancel_persist_ms=%s mm_tolerance_ticks=%s mm_tolerance_pct=%s mm_min_lifetime_ms=%s mm_replace_cooldown_ms=%s mm_entry_min_spread=%s mm_entry_stability_window=%s mm_entry_max_move_ticks=%s mm_entry_anti_trend=%s mm_entry_direction_window=%s mm_entry_direction_min_move_ticks=%s mm_trade_cooldown_ms=%s mm_entry_min_interval_ms=%s mm_entry_score_threshold=%s mm_entry_score_spread_threshold=%s mm_entry_score_w_spread=%s mm_entry_score_w_stability=%s mm_entry_score_w_trend=%s mm_entry_score_w_imbalance=%s mm_entry_score_cooldown_penalty_max=%s mm_trend_window=%s mm_trend_threshold=%s mm_trend_cancel=%s mm_post_fill_ms=%s mm_adverse_window=%s mm_adverse_rate_threshold=%s mm_defensive_offset_ticks=%s mm_confirm_updates=%s mm_min_decision_ms=%s mm_batch_ticks=%s mm_cancel_impact_ms=%s mm_cancel_summary_every=%s mm_disable_price_move_cancel=%s",
+            "[MM] enabled symbol=%s lot=%s market=%s tick_size=%s one_position_only=%s tp=%s breakeven_trailing_ticks=%s decision_min_move_ticks=%s",
             mm_symbol,
             mm_lot,
             mm_market.value,
-            max_loss_per_trade,
-            mm_max_short_term_volatility,
-            mm_volatility_window_ticks,
-            mm_cancel_on_high_volatility,
-            mm_resting_order_timeout_sec,
             mm_tick_size,
-            mm_replace_threshold_ticks,
-            mm_replace_cancel_threshold_ticks,
-            mm_replace_keep_threshold_ticks,
-            mm_replace_persist_ms,
-            mm_adverse_move_cancel_ticks,
-            mm_fast_cancel_keep_ticks,
-            mm_fast_cancel_persist_ms,
-            mm_price_tolerance_ticks,
-            mm_price_tolerance_pct,
-            mm_min_order_lifetime_ms,
-            mm_cancel_replace_cooldown_ms,
-            mm_entry_min_spread,
-            mm_entry_stability_window_ticks,
-            mm_entry_max_bid_ask_move_ticks,
-            mm_entry_anti_trend_threshold,
-            mm_entry_direction_window_ticks,
-            mm_entry_direction_min_move_ticks,
-            mm_trade_cooldown_ms,
-            mm_entry_min_place_interval_ms,
-            mm_entry_score_threshold,
-            mm_entry_score_spread_threshold,
-            mm_entry_score_w_spread,
-            mm_entry_score_w_stability,
-            mm_entry_score_w_trend,
-            mm_entry_score_w_imbalance,
-            mm_entry_score_cooldown_penalty_max,
-            mm_trend_window_ticks,
-            mm_trend_strength_threshold,
-            mm_cancel_on_strong_trend,
-            mm_post_fill_horizon_ms,
-            mm_adverse_fill_window,
-            mm_adverse_fill_rate_threshold,
-            mm_defensive_quote_offset_ticks,
-            mm_decision_confirmation_updates,
-            mm_min_decision_interval_ms,
-            mm_decision_batch_ticks,
-            mm_cancel_impact_horizon_ms,
-            mm_cancel_reason_summary_every,
-            mm_disable_price_move_cancel,
+            mm_one_position_only,
+            mm_take_profit_per_trade,
+            mm_breakeven_trailing_offset_ticks,
+            mm_decision_min_mid_move_ticks,
         )
-        logger.info("[MM][STRATEGY_DIAGNOSTIC] strategy_mode=%s", mm_strategy_mode)
+        logger.info("[MM][STRATEGY_DIAGNOSTIC] strategy_mode=MOMENTUM_ACTIVE")
         logger.info(
-            "[MM][POSITION_POLICY] MMPositionPolicyEnabled=%s MMAdaptiveTargetsPath=%s MMLearningPatchStatePath=%s",
+            "[MM][POSITION_POLICY] MMPositionPolicyEnabled=%s MMAdaptiveTargetsPath=%s",
             mm_position_policy_enabled,
             mm_adaptive_targets_path or "(bundled adaptive_learning_targets.json if present)",
-            mm_learning_patch_path or "(default fix_engine/learning_patch_state.json)",
         )
 
     if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:
