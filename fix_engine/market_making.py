@@ -2135,12 +2135,17 @@ class BasicMarketMaker:
         imbalance = ((bid_size - ask_size) / (tot + 1e-12)) if tot > 0.0 else 0.0
         mid_price = float(latest.mid_price)
 
-        # Velocity: ticks over last N updates
-        lookback_ticks = 4
+        # Velocity: ticks over last N updates, normalized by elapsed ms.
+        lookback_updates = 4
         price_move_ticks = 0.0
-        if len(self._entry_direction_mids) > lookback_ticks:
-            prev_px = float(self._entry_direction_mids[-(lookback_ticks + 1)])
-            price_move_ticks = (mid_price - prev_px) / max(1e-9, float(self._tick_size))
+        time_window_ms = 0.0
+        velocity_ticks_per_ms = 0.0
+        if len(self._signal_mid_history) > lookback_updates:
+            prev_mono, prev_px = self._signal_mid_history[-(lookback_updates + 1)]
+            last_mono, _last_px = self._signal_mid_history[-1]
+            time_window_ms = max(0.0, float(last_mono - prev_mono) * 1000.0)
+            price_move_ticks = (mid_price - float(prev_px)) / max(1e-9, float(self._tick_size))
+            velocity_ticks_per_ms = price_move_ticks / max(1e-9, time_window_ms)
 
         # Aggressive delta (flow): sum recent buy/sell "aggressive" volumes
         window_sec = 0.50
@@ -2152,9 +2157,39 @@ class BasicMarketMaker:
                 sell_vol += float(s)
         delta = float(buy_vol - sell_vol)
 
-        # Adaptive absolute delta threshold based on recent top-of-book volume
+        # Normalize delta by top-of-book volume.
+        normalized_delta = delta / max(1e-9, float(tot))
+
+        # Adaptive absolute delta threshold based on recent top-of-book volume.
+        # Keep a floor to avoid entering on tiny book sizes.
         avg_volume = float(self._avg_volume_before_current())
         delta_threshold = max(1.0, avg_volume * 0.25)
+
+        # Prevent late entries: if the move has already persisted for too many updates, skip.
+        # Define "move start" by consecutive mid moves in the direction of the current move.
+        ticks_since_move_start = 0
+        if len(self._entry_direction_mids) >= 2:
+            last = float(self._entry_direction_mids[-1])
+            prev = float(self._entry_direction_mids[-2])
+            d_last = last - prev
+            direction = 1 if d_last > 0 else (-1 if d_last < 0 else 0)
+            if direction != 0:
+                streak = 0
+                mids = list(self._entry_direction_mids)
+                for i in range(len(mids) - 1, 0, -1):
+                    d = float(mids[i]) - float(mids[i - 1])
+                    if d == 0:
+                        continue
+                    if (d > 0 and direction > 0) or (d < 0 and direction < 0):
+                        streak += 1
+                    else:
+                        break
+                ticks_since_move_start = int(streak)
+
+        # Microprice confirmation
+        microprice = mid_price
+        if tot > 0.0:
+            microprice = (float(latest.bid) * ask_size + float(latest.ask) * bid_size) / max(1e-12, tot)
 
         w100 = self._effective_signal_window_ms(100)
         w50 = self._effective_signal_window_ms(50)
@@ -2177,8 +2212,13 @@ class BasicMarketMaker:
             "total_volume": float(max(0.0, tot)),
             "avg_volume": float(avg_volume),
             "delta": float(delta),
+            "normalized_delta": float(normalized_delta),
             "delta_threshold": float(delta_threshold),
             "price_move_ticks": float(price_move_ticks),
+            "time_window_ms": float(time_window_ms),
+            "velocity": float(velocity_ticks_per_ms),
+            "ticks_since_move_start": int(ticks_since_move_start),
+            "microprice": float(microprice),
             "entry_price": 0.0,
             "decision": "SKIP",
             "reason": "no_trade",
@@ -2192,10 +2232,25 @@ class BasicMarketMaker:
             decision["reason"] = "spread_gt_1"
             self._log_entry_decision(decision)
             return decision
-        if abs(price_move_ticks) < 1.5:
-            decision["reason"] = "price_move_ticks_lt_1p5"
+        # 1) Velocity filter
+        # ticks per ms; e.g. 2 ticks over ~2000ms => 0.001
+        velocity_threshold = 0.001
+        if abs(velocity_ticks_per_ms) < velocity_threshold:
+            decision["reason"] = "velocity_below_threshold"
             self._log_entry_decision(decision)
             return decision
+
+        # 2) Stronger move requirement
+        if abs(price_move_ticks) < 2.0:
+            decision["reason"] = "price_move_ticks_lt_2"
+            self._log_entry_decision(decision)
+            return decision
+        # 3) Normalized delta filter (flow vs visible liquidity)
+        if abs(float(normalized_delta)) < 0.1:
+            decision["reason"] = "normalized_delta_lt_0p1"
+            self._log_entry_decision(decision)
+            return decision
+
         if abs(delta) < delta_threshold:
             decision["reason"] = "delta_below_threshold"
             self._log_entry_decision(decision)
@@ -2205,17 +2260,29 @@ class BasicMarketMaker:
             self._log_entry_decision(decision)
             return decision
 
+        # 4) Prevent late entries
+        if int(ticks_since_move_start) > 3:
+            decision["reason"] = "late_entry_move_streak_gt_3"
+            self._log_entry_decision(decision)
+            return decision
+
         # -------------------------
         # MOMENTUM ENTRY SIGNAL
         # -------------------------
-        long_signal = price_move_ticks >= 1.5 and delta > delta_threshold and imbalance > 0.2
-        short_signal = price_move_ticks <= -1.5 and delta < -delta_threshold and imbalance < -0.2
+        long_signal = price_move_ticks >= 2.0 and delta > delta_threshold and normalized_delta > 0.1 and imbalance > 0.2
+        short_signal = price_move_ticks <= -2.0 and delta < -delta_threshold and normalized_delta < -0.1 and imbalance < -0.2
 
         # -------------------------
         # EXECUTION: aggressive only
         # -------------------------
         impulse_gate = 1.5 * float(self._tick_size)
         if long_signal:
+            # 5) Microprice confirmation
+            if float(microprice) <= float(mid_price):
+                decision["side"] = "BUY"
+                decision["reason"] = "microprice_not_confirming_long"
+                self._log_entry_decision(decision)
+                return decision
             # short-term adverse filter
             if (momentum_50ms or 0.0) < -impulse_gate:
                 decision["side"] = "BUY"
@@ -2228,6 +2295,11 @@ class BasicMarketMaker:
             self._sync_aggressive_entry_price_for_side(decision)
             return decision
         if short_signal:
+            if float(microprice) >= float(mid_price):
+                decision["side"] = "SELL"
+                decision["reason"] = "microprice_not_confirming_short"
+                self._log_entry_decision(decision)
+                return decision
             if (momentum_50ms or 0.0) > impulse_gate:
                 decision["side"] = "SELL"
                 decision["reason"] = "short_impulse_against_short"
