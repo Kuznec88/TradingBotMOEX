@@ -11,8 +11,14 @@ env/
 .env
 .env.*
 
+# Logs / temp / backups
+*.log
+*.tmp
+*.bak
+
 # T-Invest sandbox token (optional override; prefer env TINKOFF_SANDBOX_TOKEN)
 fix_engine/settings.local.cfg
+fix_engine/settings.runtime.cfg
 *.db
 *.sqlite3
 

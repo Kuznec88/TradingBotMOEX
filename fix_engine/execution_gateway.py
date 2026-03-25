@@ -158,6 +158,7 @@ class ExecutionGateway:
                 symbol=request.symbol,
                 qty=qty,
                 market=request.market,
+                side=request.side,
             )
             if not decision.allowed:
                 self.logger.warning(

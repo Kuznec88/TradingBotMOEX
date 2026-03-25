@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from fix_engine.execution_gateway import ExecutionGateway
 from fix_engine.market_data.models import MarketData
 from fix_engine.order_models import MarketType, OrderRequest
 from fix_engine.position_manager import PositionManager
+from fix_engine.risk_manager import RiskManager
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -67,12 +69,19 @@ class BasicMarketMaker:
         normalized_delta_threshold: float = 0.03,
         score_threshold: float = 0.72,
         w_spread: float = 0.30,
-        w_move: float = 0.40,
-        w_ndelta: float = 0.30,
+        w_delta: float = 0.70,
+        penalty_wide_spread: float = 0.25,
+        penalty_low_delta: float = 0.25,
+        position_sizing_enabled: bool = True,
+        sizing_risk_per_trade_abs: float = 8.0,
+        sizing_stop_loss_ticks: float = 4.0,
+        sizing_min_qty: float = 1.0,
+        sizing_max_qty: float = 1.0,
+        risk_manager: RiskManager | None = None,
         no_trade_fallback_minutes: float = 3.0,
         fallback_relax_step: float = 0.85,
-        fallback_min_move_ticks: float = 0.75,
-        fallback_min_ndelta: float = 0.015,
+        fallback_min_delta: float = 0.0,
+        fallback_min_score: float = 0.10,
         fallback_max_spread: float = 8.0,
         metrics_log_every: int = 200,
         one_position_only: bool = True,
@@ -96,39 +105,29 @@ class BasicMarketMaker:
 
         # Base thresholds (will be adapted by fallback)
         base_max_spread = float(max_spread) if max_spread is not None else float(spread_threshold)
-        base_move_thr = float(move_threshold)
-        base_ndelta_thr = float(normalized_delta_threshold)
+        base_delta_thr = float(delta_threshold)
         base_score_thr = float(score_threshold)
 
         if self._mode == "AGGRESSIVE":
             base_max_spread = max(base_max_spread, 6.0)
-            base_move_thr = min(base_move_thr, 1.0) if base_move_thr > 0 else 1.0
-            base_ndelta_thr = min(base_ndelta_thr, 0.02)
-            base_score_thr = min(base_score_thr, 0.55)
+            base_score_thr = min(base_score_thr, 0.40)
         elif self._mode == "NORMAL":
             base_max_spread = max(base_max_spread, 5.0)
-            base_move_thr = min(base_move_thr, 1.5) if base_move_thr > 0 else 1.5
-            base_ndelta_thr = min(base_ndelta_thr, 0.03)
-            base_score_thr = min(base_score_thr, 0.65)
+            base_score_thr = min(base_score_thr, 0.50)
         else:  # SAFE
             base_max_spread = max(base_max_spread, 5.0)  # requested default
-            base_move_thr = max(base_move_thr, 2.0) if base_move_thr > 0 else 2.0
-            base_ndelta_thr = max(base_ndelta_thr, 0.03)
-            base_score_thr = max(base_score_thr, 0.72)
+            base_score_thr = max(base_score_thr, 0.55)
 
         self._base_max_spread = max(0.1, float(base_max_spread))
-        self._base_move_threshold = max(0.0, float(base_move_thr))
         self._base_velocity_threshold = max(0.0, float(velocity_threshold))
-        self._base_delta_threshold = max(0.0, float(delta_threshold))
         self._base_imbalance_threshold = max(0.0, float(imbalance_threshold))
-        self._base_normalized_delta_threshold = max(0.0, float(base_ndelta_thr))
+        self._base_delta_threshold = max(0.0, float(base_delta_thr))
         self._base_score_threshold = max(0.0, float(base_score_thr))
 
         # Scoring weights
-        wsum = max(1e-9, float(w_spread) + float(w_move) + float(w_ndelta))
+        wsum = max(1e-9, float(w_spread) + float(w_delta))
         self._w_spread = float(w_spread) / wsum
-        self._w_move = float(w_move) / wsum
-        self._w_ndelta = float(w_ndelta) / wsum
+        self._w_delta = float(w_delta) / wsum
 
         # Dynamic spread
         self._dynamic_spread_enabled = bool(dynamic_spread_enabled)
@@ -138,15 +137,29 @@ class BasicMarketMaker:
         # Fallback relaxation
         self._no_trade_fallback_sec = max(0.0, float(no_trade_fallback_minutes) * 60.0)
         self._fallback_relax_step = _clamp(float(fallback_relax_step), 0.50, 0.99)
-        self._fallback_min_move_ticks = max(0.0, float(fallback_min_move_ticks))
-        self._fallback_min_ndelta = max(0.0, float(fallback_min_ndelta))
+        self._fallback_min_delta = max(0.0, float(fallback_min_delta))
+        self._fallback_min_score = max(0.0, float(fallback_min_score))
         self._fallback_max_spread = max(self._base_max_spread, float(fallback_max_spread))
         self._last_fallback_adjust_mono = 0.0
         self._fallback_adjust_cooldown_sec = 30.0
+        self._fallback_max_adjustments = 12
+        self._fallback_adjustments_done = 0
 
         # Metrics
         self.metrics = SignalMetrics()
         self._metrics_log_every = max(10, int(metrics_log_every))
+
+        # Penalties (subtractive, soft)
+        self._penalty_wide_spread = _clamp(float(penalty_wide_spread), 0.0, 10.0)
+        self._penalty_low_delta = _clamp(float(penalty_low_delta), 0.0, 10.0)
+
+        # Position sizing (risk-based)
+        self._position_sizing_enabled = bool(position_sizing_enabled)
+        self._sizing_risk_per_trade_abs = max(0.0, float(sizing_risk_per_trade_abs))
+        self._sizing_stop_loss_ticks = max(1e-9, float(sizing_stop_loss_ticks))
+        self._sizing_min_qty = max(0.0, float(sizing_min_qty))
+        self._sizing_max_qty = max(self._sizing_min_qty, float(sizing_max_qty))
+        self._risk_manager = risk_manager
 
         self._cooldown_sec = max(0.0, float(cooldown_ms) / 1000.0)
 
@@ -158,10 +171,18 @@ class BasicMarketMaker:
         self._entry_monotonic = 0.0
         self._immediate_ticks_seen = 0
         self._entry_mid_price = 0.0
+        self._entry_qty_abs = 0.0
+        self._entry_sign = 0  # +1 long, -1 short
 
-        # Feature window (single snapshot decision uses recent move)
-        self._window_ms = 200.0
-        self._mid_hist: deque[tuple[float, float]] = deque(maxlen=512)  # (mono_ms, mid)
+        self._warned_zero_delta_threshold = False
+
+        # Minimal PnL / winrate stats (realized on close)
+        self._realized_pnl = 0.0
+        self._trades_closed = 0
+        self._wins = 0
+
+        # Minimal feature history (for debug/compat; strategy uses single-snapshot)
+        self._mid_hist: deque[tuple[float, float]] = deque(maxlen=64)  # (mono_ms, mid)
         self._last_entry_place_monotonic = 0.0
         self._last_signal_execute_mono = 0.0
 
@@ -182,23 +203,48 @@ class BasicMarketMaker:
         avg_px = state.get("avg_px", None)
         fill_px = float(last_px or avg_px or 0.0)
 
+        prev_qty = float(self._position_qty)
         if side == "1":
-            self._position_qty += last_qty
+            self._position_qty = prev_qty + last_qty
         else:
-            self._position_qty -= last_qty
+            self._position_qty = prev_qty - last_qty
 
         if abs(self._entry_price) < 1e-12 and abs(self._position_qty) > 1e-12:
             self._entry_price = fill_px
             self._entry_monotonic = time.perf_counter()
             self._immediate_ticks_seen = 0
             self._entry_mid_price = 0.0
+            self._entry_qty_abs = abs(self._position_qty)
+            self._entry_sign = 1 if self._position_qty > 0 else -1
 
-        if abs(self._position_qty) < 1e-12:
+        if abs(self._position_qty) < 1e-12 and abs(prev_qty) > 1e-12:
             self._position_qty = 0.0
+            # Realize PnL on close using last fill price.
+            if abs(self._entry_price) > 1e-12 and self._entry_sign != 0:
+                pnl = (fill_px - self._entry_price) * float(self._entry_sign) * max(1.0, float(self._entry_qty_abs))
+                self._realized_pnl += pnl
+                self._trades_closed += 1
+                if pnl > 0:
+                    self._wins += 1
+                winrate = (self._wins / self._trades_closed) if self._trades_closed > 0 else 0.0
+                self.logger.info(
+                    "[MM][TRADE_CLOSE] symbol=%s pnl=%.4f realized_total=%.4f trades=%s winrate=%.2f%% exit_px=%.4f entry_px=%.4f",
+                    self.symbol,
+                    pnl,
+                    self._realized_pnl,
+                    self._trades_closed,
+                    100.0 * winrate,
+                    fill_px,
+                    self._entry_price,
+                )
+                if self._risk_manager is not None:
+                    self._risk_manager.on_trade_result(net_pnl=float(pnl))
             self._entry_price = 0.0
             self._entry_monotonic = 0.0
             self._immediate_ticks_seen = 0
             self._entry_mid_price = 0.0
+            self._entry_qty_abs = 0.0
+            self._entry_sign = 0
 
     def on_market_data(self, data: MarketData) -> None:
         if data.symbol.upper() != self.symbol:
@@ -228,32 +274,14 @@ class BasicMarketMaker:
     def _compute_features(self, *, data: MarketData, now_ms: float) -> dict[str, float]:
         spread_ticks = float(data.spread) / self._tick_size
         self._spread_hist.append(spread_ticks)
-        cutoff = now_ms - self._window_ms
-        old_mid = float(data.mid_price)
-        old_ms = now_ms
-        for ts_ms, mid in self._mid_hist:
-            if ts_ms >= cutoff:
-                old_ms = ts_ms
-                old_mid = mid
-                break
-        move_ticks = (float(data.mid_price) - float(old_mid)) / self._tick_size
-        dt_ms = max(1.0, now_ms - old_ms)
-        velocity = move_ticks / dt_ms
-
         bid_sz = float(getattr(data, "bid_size", 0.0) or 0.0)
         ask_sz = float(getattr(data, "ask_size", 0.0) or 0.0)
         delta = bid_sz - ask_sz
-        denom = bid_sz + ask_sz
-        imbalance = (delta / denom) if denom > 1e-12 else 0.0
-        normalized_delta = (delta / denom) if denom > 1e-12 else 0.0
 
         return {
             "spread": spread_ticks,
-            "price_move_ticks": move_ticks,
-            "velocity": velocity,
+            "mid_price": float(data.mid_price),
             "delta": delta,
-            "imbalance": imbalance,
-            "normalized_delta": normalized_delta,
         }
 
     def _effective_max_spread(self) -> float:
@@ -272,26 +300,34 @@ class BasicMarketMaker:
             return
         if self._last_fallback_adjust_mono > 0.0 and (now_mono - self._last_fallback_adjust_mono) < self._fallback_adjust_cooldown_sec:
             return
+        if self._fallback_adjustments_done >= self._fallback_max_adjustments:
+            return
+        # Stop if we're already at bounds.
+        if (
+            self._base_delta_threshold <= self._fallback_min_delta + 1e-12
+            and self._base_score_threshold <= self._fallback_min_score + 1e-12
+            and self._base_max_spread >= self._fallback_max_spread - 1e-12
+        ):
+            return
 
-        old_move = self._base_move_threshold
-        old_nd = self._base_normalized_delta_threshold
+        old_delta = self._base_delta_threshold
         old_score = self._base_score_threshold
         old_spread = self._base_max_spread
 
-        self._base_move_threshold = max(self._fallback_min_move_ticks, self._base_move_threshold * self._fallback_relax_step)
-        self._base_normalized_delta_threshold = max(self._fallback_min_ndelta, self._base_normalized_delta_threshold * self._fallback_relax_step)
-        self._base_score_threshold = max(0.30, self._base_score_threshold * self._fallback_relax_step)
+        self._base_delta_threshold = max(self._fallback_min_delta, self._base_delta_threshold * self._fallback_relax_step)
+        self._base_score_threshold = max(self._fallback_min_score, self._base_score_threshold * self._fallback_relax_step)
         self._base_max_spread = min(self._fallback_max_spread, self._base_max_spread / self._fallback_relax_step)
 
         self._last_fallback_adjust_mono = now_mono
+        self._fallback_adjustments_done += 1
         self.logger.warning(
-            "[MM][FALLBACK] mode=%s no_trades_sec=%.1f move_thr %.3f->%.3f ndelta_thr %.4f->%.4f score_thr %.3f->%.3f max_spread %.2f->%.2f",
+            "[MM][FALLBACK] mode=%s no_trades_sec=%.1f step=%s/%s delta_thr %.3f->%.3f score_thr %.3f->%.3f max_spread %.2f->%.2f",
             self._mode,
             float(now_mono - (self._last_signal_execute_mono or now_mono)),
-            old_move,
-            self._base_move_threshold,
-            old_nd,
-            self._base_normalized_delta_threshold,
+            self._fallback_adjustments_done,
+            self._fallback_max_adjustments,
+            old_delta,
+            self._base_delta_threshold,
             old_score,
             self._base_score_threshold,
             old_spread,
@@ -303,68 +339,48 @@ class BasicMarketMaker:
         self._maybe_apply_fallback(now_mono=now_mono)
 
         spread = float(market_snapshot.get("spread", 0.0))
-        price_move_ticks = float(market_snapshot.get("price_move_ticks", 0.0))
-        velocity = float(market_snapshot.get("velocity", 0.0))
         delta = float(market_snapshot.get("delta", 0.0))
-        imbalance = float(market_snapshot.get("imbalance", 0.0))
-        normalized_delta = float(market_snapshot.get("normalized_delta", 0.0))
+        mid_price = float(market_snapshot.get("mid_price", 0.0))
 
         max_spread = self._effective_max_spread()
-        move_thr = float(self._base_move_threshold)
-        vel_thr = float(self._base_velocity_threshold)
         delta_thr = float(self._base_delta_threshold)
-        imb_thr = float(self._base_imbalance_threshold)
-        ndelta_thr = float(self._base_normalized_delta_threshold)
+        if delta_thr <= 0.0:
+            if not self._warned_zero_delta_threshold:
+                self._warned_zero_delta_threshold = True
+                self.logger.warning(
+                    "[MM][CONFIG] delta_threshold<=0 (%.6f). Using eps=1e-6 for scoring; set delta_threshold>=1 in config.",
+                    delta_thr,
+                )
+            delta_thr = 1e-6
         score_thr = float(self._base_score_threshold)
 
         # Component scores (0..1)
         spread_score = _clamp(1.0 - (spread / max_spread), 0.0, 1.0)
-        move_score = _clamp(abs(price_move_ticks) / max(move_thr, 1e-9), 0.0, 1.0)
-        ndelta_score = _clamp(abs(normalized_delta) / max(ndelta_thr, 1e-9), 0.0, 1.0)
+        delta_score = min(1.0, abs(delta) / max(delta_thr, 1e-6))
 
-        score = self._w_spread * spread_score + self._w_move * move_score + self._w_ndelta * ndelta_score
+        score = self._w_spread * spread_score + self._w_delta * delta_score
 
-        # Optional soft gates (penalties, not hard skips)
-        if vel_thr > 0.0 and abs(velocity) < vel_thr:
-            score *= 0.75
-        if delta_thr > 0.0 and abs(delta) < delta_thr:
-            score *= 0.80
-        if imb_thr > 0.0 and abs(imbalance) < imb_thr:
-            score *= 0.85
+        # Subtractive penalties (soft)
+        if spread > max_spread:
+            score -= self._penalty_wide_spread
+        if abs(delta) < delta_thr:
+            score -= self._penalty_low_delta
 
-        # Direction confirmation bonus/penalty
-        dir_move = _sign(price_move_ticks)
-        dir_flow = _sign(normalized_delta)
-        dir_imb = _sign(imbalance)
-        if dir_move != 0 and dir_flow != 0 and dir_move == dir_flow:
-            score *= 1.10
-        elif dir_move != 0 and dir_flow != 0 and dir_move != dir_flow:
-            score *= 0.85
-        if dir_move != 0 and dir_imb != 0 and dir_move != dir_imb:
-            score *= 0.92
-
-        score = _clamp(score, 0.0, 2.0)
+        score = _clamp(score, -2.0, 2.0)
 
         decision = "NONE"
         reason = "score_below_threshold"
         if score >= score_thr:
-            if dir_move > 0:
+            dir_delta = _sign(delta)
+            if dir_delta > 0:
                 decision = "LONG"
                 reason = "score_pass"
-            elif dir_move < 0:
+            elif dir_delta < 0:
                 decision = "SHORT"
                 reason = "score_pass"
             else:
-                # If move is 0 but score passed via ndelta, use flow direction.
-                if dir_flow > 0:
-                    decision = "LONG"
-                    reason = "score_pass_flow_dir"
-                elif dir_flow < 0:
-                    decision = "SHORT"
-                    reason = "score_pass_flow_dir"
-                else:
-                    decision = "NONE"
-                    reason = "direction_undefined"
+                decision = "NONE"
+                reason = "direction_undefined"
 
         if decision == "NONE":
             self.metrics.bump_skip(reason)
@@ -377,24 +393,19 @@ class BasicMarketMaker:
             "score_thr": float(score_thr),
             "spread": float(spread),
             "max_spread": float(max_spread),
-            "move_ticks": float(price_move_ticks),
-            "move_thr": float(move_thr),
-            "vel": float(velocity),
-            "ndelta": float(normalized_delta),
-            "ndelta_thr": float(ndelta_thr),
+            "mid": float(mid_price),
             "delta": float(delta),
-            "imb": float(imbalance),
+            "delta_score": float(delta_score),
             # deficits ("what missing")
             "need_spread": float(max(0.0, spread - max_spread)),
-            "need_move": float(max(0.0, move_thr - abs(price_move_ticks))),
-            "need_ndelta": float(max(0.0, ndelta_thr - abs(normalized_delta))),
+            "need_delta": float(max(0.0, delta_thr - abs(delta))),
+            "delta_thr": float(delta_thr),
         }
         return decision, row
 
     def _log_decision(self, row: dict[str, float | str]) -> None:
-        # Compact but informative: include what was missing to execute.
         self.logger.info(
-            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f spread=%.2f/%.2f move=%.2f/%.2f ndelta=%.3f/%.3f need(move=%.2f ndelta=%.3f spread=%.2f) delta=%.2f imb=%.3f vel=%.6f",
+            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f spread=%.2f/%.2f mid=%.4f delta=%.2f/%.2f delta_score=%.3f need(delta=%.2f spread=%.2f)",
             str(row.get("symbol", "")),
             str(row.get("mode", "")),
             str(row.get("decision", "")),
@@ -403,16 +414,12 @@ class BasicMarketMaker:
             float(row.get("score_thr", 0.0)),
             float(row.get("spread", 0.0)),
             float(row.get("max_spread", 0.0)),
-            float(row.get("move_ticks", 0.0)),
-            float(row.get("move_thr", 0.0)),
-            float(row.get("ndelta", 0.0)),
-            float(row.get("ndelta_thr", 0.0)),
-            float(row.get("need_move", 0.0)),
-            float(row.get("need_ndelta", 0.0)),
-            float(row.get("need_spread", 0.0)),
+            float(row.get("mid", 0.0)),
             float(row.get("delta", 0.0)),
-            float(row.get("imb", 0.0)),
-            float(row.get("vel", 0.0)),
+            float(row.get("delta_thr", 0.0)),
+            float(row.get("delta_score", 0.0)),
+            float(row.get("need_delta", 0.0)),
+            float(row.get("need_spread", 0.0)),
         )
         if self.metrics.signals_total % self._metrics_log_every == 0:
             top = sorted(self.metrics.skip_reason_counter.items(), key=lambda kv: kv[1], reverse=True)[:5]
@@ -424,16 +431,36 @@ class BasicMarketMaker:
                 top,
             )
 
+    def _entry_qty(self) -> float:
+        # Default: configured lot size (legacy behavior).
+        base = max(0.0, float(self.lot_size))
+        if not self._position_sizing_enabled:
+            return base
+        if self._sizing_risk_per_trade_abs <= 0.0:
+            return base
+        # Very simple risk model: worst-case loss per 1 qty ~= stop_loss_ticks * tick_size.
+        risk_per_unit = self._sizing_stop_loss_ticks * self._tick_size
+        if risk_per_unit <= 0:
+            return base
+        raw_qty = math.floor(self._sizing_risk_per_trade_abs / risk_per_unit)
+        qty = float(raw_qty)
+        qty = _clamp(qty, self._sizing_min_qty, self._sizing_max_qty)
+        # If clamp makes it 0, fall back to base.
+        return qty if qty > 0 else base
+
     def _send_aggressive_entry(self, *, decision: str, data: MarketData, now_mono: float) -> None:
         if self._one_position_only and abs(self._position_qty) > 1e-12:
             return
 
         side = "1" if decision == "LONG" else "2"
         price = float(data.ask) if side == "1" else float(data.bid)
+        qty = self._entry_qty()
+        if qty <= 0:
+            return
         req = OrderRequest(
             symbol=self.symbol,
             side=side,
-            qty=self.lot_size,
+            qty=qty,
             account="",
             price=price,
             market=self.market,
@@ -448,7 +475,7 @@ class BasicMarketMaker:
             "[MM][ENTRY_EXECUTE] symbol=%s side=%s qty=%s px=%.4f cl_ord_id=%s",
             self.symbol,
             side,
-            self.lot_size,
+            qty,
             price,
             cl_ord_id,
         )

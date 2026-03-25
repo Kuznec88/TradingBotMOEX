@@ -87,7 +87,7 @@ def main() -> int:
                 }
             )
 
-    # 1) Экспорты JSON (вся БД по round trips + hold learning)
+    # 1) Экспорты JSON (вся БД по round trips)
     r1 = subprocess.run(
         [
             py,
@@ -105,26 +105,9 @@ def main() -> int:
     if r1.returncode != 0:
         (out / "export_trading_analytics_stderr.txt").write_text(r1.stderr or "", encoding="utf-8")
 
-    r2 = subprocess.run(
-        [
-            py,
-            str(base / "tools" / "export_hold_learning_json.py"),
-            "--all",
-            "-o",
-            str(out / "hold_learning_export_ALL.json"),
-        ],
-        cwd=str(base),
-        capture_output=True,
-        text=True,
-    )
-    add_file(out / "hold_learning_export_ALL.json", "export_hold_learning_json --all")
-    if r2.returncode != 0:
-        (out / "export_hold_learning_stderr.txt").write_text(r2.stderr or "", encoding="utf-8")
-
     # 2) Сессионные копии из log/ (если есть)
     for name in (
         "trading_analytics_export.json",
-        "hold_learning_export.json",
         "session_metrics_collect.json",
         "strategy_failure_report.json",
         "session_start_marker.txt",
@@ -190,11 +173,9 @@ def main() -> int:
                     {"reason": "db larger than limit", "bytes": sz, "limit_bytes": max_db},
                 )
 
-    # 5) Конфиги и цели
+    # 5) Конфиги
     for rel in (
         "settings.cfg",
-        "adaptive_learning_targets.json",
-        "learning_patch_state.json",
     ):
         p = base / rel
         if p.is_file():
