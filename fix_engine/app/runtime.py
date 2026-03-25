@@ -191,7 +191,6 @@ def run() -> None:
         move_threshold=_read_float(cfg_for_optional, "move_threshold", 0.0),  # legacy/ignored
         velocity_threshold=_read_float(cfg_for_optional, "velocity_threshold", 0.0),  # legacy/ignored
         delta_threshold=_read_float(cfg_for_optional, "delta_threshold", 1.0),
-        imbalance_threshold=_read_float(cfg_for_optional, "imbalance_threshold", 0.0),  # legacy/ignored
         normalized_delta_threshold=_read_float(cfg_for_optional, "normalized_delta_threshold", 0.0),  # legacy/ignored
         score_threshold=_read_float(cfg_for_optional, "score_threshold", 0.72),
         w_spread=_read_float(cfg_for_optional, "w_spread", 0.30),
@@ -211,6 +210,26 @@ def run() -> None:
         fallback_max_spread=_read_float(cfg_for_optional, "fallback_max_spread", 8.0),
         metrics_log_every=_read_int(cfg_for_optional, "metrics_log_every", 200),
         cooldown_ms=_read_int(cfg_for_optional, "cooldown_ms", 1200),
+        # Exit behavior: prefer TP/SL + trailing; score-exit disabled by default
+        exit_on_score_enabled=_read_bool(cfg_for_optional, "exit_on_score_enabled", False),
+        exit_threshold=_read_float(cfg_for_optional, "exit_threshold", 0.0),
+        max_holding_sec=_read_float(cfg_for_optional, "max_holding_sec", 0.0),
+        max_exit_spread=_read_float(cfg_for_optional, "max_exit_spread", 0.0) or None,
+        force_time_exit_enabled=_read_bool(cfg_for_optional, "force_time_exit_enabled", False),
+        force_time_exit_after_sec=_read_float(cfg_for_optional, "force_time_exit_after_sec", 0.0),
+        # Entry quality filters
+        min_entry_spread=_read_float(cfg_for_optional, "min_entry_spread", 1.0),
+        max_entry_spread=_read_float(cfg_for_optional, "max_entry_spread", 3.0),
+        entry_imbalance_threshold=_read_float(cfg_for_optional, "imbalance_threshold", 0.2),
+        min_abs_imbalance=_read_float(cfg_for_optional, "min_abs_imbalance", 0.1),
+        trend_lookback_ticks=_read_int(cfg_for_optional, "trend_lookback_ticks", 8),
+        min_trend_move_ticks=_read_float(cfg_for_optional, "min_trend_move_ticks", 1.0),
+        # TP/SL/trailing
+        take_profit_ticks=_read_float(cfg_for_optional, "take_profit_ticks", 2.0),
+        stop_loss_ticks=_read_float(cfg_for_optional, "stop_loss_ticks", 1.0),
+        trailing_start_ticks=_read_float(cfg_for_optional, "trailing_start_ticks", 2.0),
+        trailing_gap_ticks=_read_float(cfg_for_optional, "trailing_gap_ticks", 1.0),
+        exit_imbalance_reversal=_read_float(cfg_for_optional, "exit_imbalance_reversal", 0.2),
         one_position_only=_read_bool(cfg_for_optional, "one_position_only", _read_bool(cfg_for_optional, "MMOnePositionOnly", True)),
         entry_decision_sink=economics_store.insert_entry_decisions,
         economics_store=economics_store,

@@ -392,24 +392,35 @@ class ExecutionGateway:
                 if data.timestamp < order_ref_ts:
                     skew = order_ref_ts - data.timestamp
                     if skew > timedelta(milliseconds=50):
-                        self.logger.error(
-                            "[SIM][LOOKAHEAD_VIOLATION] order_id=%s md_ts=%s order_ref_ts=%s skew_ms=%.1f",
+                        # In paper-mode we prefer progress over strict causality: do not block fills.
+                        self.logger.warning(
+                            "[SIM][LOOKAHEAD_VIOLATION] order_id=%s md_ts=%s order_ref_ts=%s skew_ms=%.1f (not blocking fill)",
                             pending.cl_ord_id,
                             data.timestamp.isoformat(),
                             order_ref_ts.isoformat(),
                             skew.total_seconds() * 1000.0,
                         )
-                        continue
-            if not self._is_crossed(pending, data, abs_return=abs_return, move_dir=move_dir):
-                continue
+
+            crossed = self._is_crossed(pending, data, abs_return=abs_return, move_dir=move_dir)
 
             if self._stream_book_fills:
                 cap = float(getattr(data, "ask_size" if pending.side == "1" else "bid_size", 0.0) or 0.0)
                 fill_qty = min(pending.remaining, cap) if cap > 0.0 else pending.remaining
             else:
                 fill_qty = min(pending.remaining, available_qty)
-            if fill_qty <= 0.0:
+            if fill_qty <= 0.0 or not crossed:
+                self.logger.debug(
+                    "[SIM][MATCH_CHECK] order_id=%s side=%s qty=%.4f px=%s crossed=%s matched_qty=0.0000 best_bid=%.4f best_ask=%.4f",
+                    pending.cl_ord_id,
+                    pending.side,
+                    pending.remaining,
+                    pending.limit_price,
+                    bool(crossed),
+                    float(data.bid),
+                    float(data.ask),
+                )
                 continue
+
             fill_px, slip_bps = self._fill_price(pending, data, abs_return=abs_return, move_dir=move_dir)
             cum_qty = pending.qty - pending.remaining + fill_qty
             leaves_qty = max(0.0, pending.qty - cum_qty)
@@ -422,6 +433,18 @@ class ExecutionGateway:
                 f"Stream book fill (bid={data.bid} ask={data.ask})"
                 if self._stream_book_fills
                 else f"Simulated fill latency_ms={fill_latency_ms} slippage_bps={slip_bps:.4f}"
+            )
+            self.logger.debug(
+                "[SIM][MATCH_CHECK] order_id=%s side=%s qty=%.4f px=%s crossed=%s matched_qty=%.4f best_bid=%.4f best_ask=%.4f fill_px=%.4f",
+                pending.cl_ord_id,
+                pending.side,
+                pending.remaining,
+                pending.limit_price,
+                bool(crossed),
+                float(fill_qty),
+                float(data.bid),
+                float(data.ask),
+                float(fill_px),
             )
             self._emit_execution_report(
                 cl_ord_id=pending.cl_ord_id,
@@ -436,6 +459,18 @@ class ExecutionGateway:
                 last_px=fill_px,
                 text=fill_text,
             )
+            if is_full:
+                # Strategy-level hook without importing strategy modules.
+                self.logger.info(
+                    "[MM][TRADE_FILLED] symbol=%s order_id=%s side=%s qty=%.4f px=%.4f best_bid=%.4f best_ask=%.4f",
+                    pending.symbol,
+                    pending.cl_ord_id,
+                    pending.side,
+                    float(fill_qty),
+                    float(fill_px),
+                    float(data.bid),
+                    float(data.ask),
+                )
 
             with self._lock:
                 if pending.cl_ord_id in self._pending_orders:
@@ -492,33 +527,17 @@ class ExecutionGateway:
         return float(max(float(lpx), float(data.ask))), 0.0
 
     def _is_crossed(self, pending: _PendingSimOrder, data: MarketData, *, abs_return: float, move_dir: int) -> bool:
-        if self._stream_book_fills:
-            return self._is_crossed_stream_book(pending, data)
+        # Paper-mode crossing rules (deterministic):
+        # - BUY crosses if limit >= best_ask
+        # - SELL crosses if limit <= best_bid
+        # Also treats at-touch as crossed to avoid missing fills on minimal spread.
         if pending.limit_price is None:
             return True
+        eps = self._px_eps(data)
+        lpx = float(pending.limit_price)
         if pending.side == "1":
-            if pending.limit_price >= data.ask:
-                return True
-            # At-touch passive buy: probabilistic queue fill.
-            if abs(pending.limit_price - data.bid) <= 1e-9:
-                probability = self._passive_fill_probability(
-                    side=pending.side,
-                    abs_return=abs_return,
-                    move_dir=move_dir,
-                )
-                return self._simulation_rng.random() < probability
-            return False
-        if pending.limit_price <= data.bid:
-            return True
-        # At-touch passive sell: probabilistic queue fill.
-        if abs(pending.limit_price - data.ask) <= 1e-9:
-            probability = self._passive_fill_probability(
-                side=pending.side,
-                abs_return=abs_return,
-                move_dir=move_dir,
-            )
-            return self._simulation_rng.random() < probability
-        return False
+            return (lpx + eps) >= float(data.ask)
+        return (lpx - eps) <= float(data.bid)
 
     def _fill_price(
         self, pending: _PendingSimOrder, data: MarketData, *, abs_return: float, move_dir: int

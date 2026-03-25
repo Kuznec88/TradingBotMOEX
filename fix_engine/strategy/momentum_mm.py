@@ -58,7 +58,7 @@ class BasicMarketMaker:
         move_threshold: float,
         velocity_threshold: float,
         delta_threshold: float,
-        imbalance_threshold: float,
+        imbalance_threshold: float = 0.0,
         cooldown_ms: int,
         # New config (scoring / modes / dynamic spread / fallback)
         strategy_mode: str = "SAFE",  # SAFE / NORMAL / AGGRESSIVE
@@ -84,6 +84,26 @@ class BasicMarketMaker:
         fallback_min_score: float = 0.10,
         fallback_max_spread: float = 8.0,
         metrics_log_every: int = 200,
+        # Exit / closing logic (optional; defaults keep current behavior stable)
+        exit_on_score_enabled: bool = False,
+        exit_threshold: float | None = None,
+        max_holding_sec: float = 0.0,
+        max_exit_spread: float | None = None,
+        force_time_exit_enabled: bool = False,
+        force_time_exit_after_sec: float = 0.0,
+        # Entry/exit quality filters (optional)
+        min_entry_spread: float = 1.0,  # ticks
+        max_entry_spread: float = 3.0,  # ticks
+        entry_imbalance_threshold: float = 0.2,
+        min_abs_imbalance: float = 0.1,
+        trend_lookback_ticks: int = 8,
+        min_trend_move_ticks: float = 1.0,
+        # TP/SL/trailing (ticks)
+        take_profit_ticks: float = 2.0,
+        stop_loss_ticks: float = 1.0,
+        trailing_start_ticks: float = 2.0,
+        trailing_gap_ticks: float = 1.0,
+        exit_imbalance_reversal: float = 0.2,
         one_position_only: bool = True,
         entry_decision_sink: object | None = None,
         economics_store: object | None = None,
@@ -169,10 +189,16 @@ class BasicMarketMaker:
         self._position_qty = 0.0
         self._entry_price = 0.0
         self._entry_monotonic = 0.0
+        self._entry_cl_ord_id = ""
         self._immediate_ticks_seen = 0
         self._entry_mid_price = 0.0
         self._entry_qty_abs = 0.0
         self._entry_sign = 0  # +1 long, -1 short
+        self._best_favorable_ticks = 0.0
+        self._exit_in_flight = False
+        self._exit_last_send_mono = 0.0
+        self._exit_cl_ord_id = ""
+        self._exit_reason = ""
 
         self._warned_zero_delta_threshold = False
 
@@ -188,6 +214,31 @@ class BasicMarketMaker:
 
         _ = entry_decision_sink
         _ = economics_store
+
+        # Exit thresholds (kept separate from entry thresholds)
+        self._exit_on_score_enabled = bool(exit_on_score_enabled)
+        base_exit_thr = float(exit_threshold) if exit_threshold is not None else (self._base_score_threshold * 0.80)
+        self._exit_threshold = _clamp(float(base_exit_thr), 0.0, 2.0)
+        self._max_holding_sec = max(0.0, float(max_holding_sec))
+        self._max_exit_spread = float(max_exit_spread) if max_exit_spread is not None else None
+        self._force_time_exit_enabled = bool(force_time_exit_enabled)
+        self._force_time_exit_after_sec = max(0.0, float(force_time_exit_after_sec))
+
+        # Entry filters
+        self._min_entry_spread = max(0.0, float(min_entry_spread))
+        self._max_entry_spread = max(self._min_entry_spread, float(max_entry_spread))
+        _ = imbalance_threshold  # legacy arg retained for back-compat (ignored)
+        self._imbalance_threshold = _clamp(float(entry_imbalance_threshold), 0.0, 1.0)
+        self._min_abs_imbalance = _clamp(float(min_abs_imbalance), 0.0, 1.0)
+        self._trend_lookback = max(2, int(trend_lookback_ticks))
+        self._min_trend_move_ticks = max(0.0, float(min_trend_move_ticks))
+
+        # TP/SL/trailing
+        self._tp_ticks = max(0.0, float(take_profit_ticks))
+        self._sl_ticks = max(0.0, float(stop_loss_ticks))
+        self._trail_start = max(0.0, float(trailing_start_ticks))
+        self._trail_gap = max(0.0, float(trailing_gap_ticks))
+        self._exit_imbalance_reversal = _clamp(float(exit_imbalance_reversal), 0.0, 1.0)
 
     def on_execution_report(self, state: dict[str, object]) -> None:
         if str(state.get("symbol", "")).upper() != self.symbol:
@@ -212,39 +263,56 @@ class BasicMarketMaker:
         if abs(self._entry_price) < 1e-12 and abs(self._position_qty) > 1e-12:
             self._entry_price = fill_px
             self._entry_monotonic = time.perf_counter()
+            self._entry_cl_ord_id = str(state.get("cl_ord_id", "") or "")
             self._immediate_ticks_seen = 0
             self._entry_mid_price = 0.0
             self._entry_qty_abs = abs(self._position_qty)
             self._entry_sign = 1 if self._position_qty > 0 else -1
+            self._best_favorable_ticks = 0.0
+            self._exit_in_flight = False
+            self._exit_last_send_mono = 0.0
+            self._exit_cl_ord_id = ""
+            self._exit_reason = ""
 
         if abs(self._position_qty) < 1e-12 and abs(prev_qty) > 1e-12:
             self._position_qty = 0.0
             # Realize PnL on close using last fill price.
             if abs(self._entry_price) > 1e-12 and self._entry_sign != 0:
-                pnl = (fill_px - self._entry_price) * float(self._entry_sign) * max(1.0, float(self._entry_qty_abs))
+                qty = max(0.0, float(self._entry_qty_abs))
+                pnl = (fill_px - self._entry_price) * float(self._entry_sign) * qty
                 self._realized_pnl += pnl
                 self._trades_closed += 1
                 if pnl > 0:
                     self._wins += 1
                 winrate = (self._wins / self._trades_closed) if self._trades_closed > 0 else 0.0
+                exit_side = "2" if prev_qty > 0 else "1"
                 self.logger.info(
-                    "[MM][TRADE_CLOSE] symbol=%s pnl=%.4f realized_total=%.4f trades=%s winrate=%.2f%% exit_px=%.4f entry_px=%.4f",
+                    "[MM][TRADE_CLOSE] symbol=%s order_id=%s side=%s qty=%.4f exit_price=%.4f realized_pnl=%.4f timestamp=%s realized_total=%.4f trades=%s winrate=%.2f%%",
                     self.symbol,
+                    self._entry_cl_ord_id or str(state.get("cl_ord_id", "") or ""),
+                    exit_side,
+                    qty,
+                    fill_px,
                     pnl,
+                    float(time.time()),
                     self._realized_pnl,
                     self._trades_closed,
                     100.0 * winrate,
-                    fill_px,
-                    self._entry_price,
                 )
                 if self._risk_manager is not None:
                     self._risk_manager.on_trade_result(net_pnl=float(pnl))
             self._entry_price = 0.0
             self._entry_monotonic = 0.0
+            self._entry_cl_ord_id = ""
             self._immediate_ticks_seen = 0
             self._entry_mid_price = 0.0
             self._entry_qty_abs = 0.0
             self._entry_sign = 0
+            self._best_favorable_ticks = 0.0
+            self._exit_in_flight = False
+            self._exit_last_send_mono = 0.0
+            self._exit_cl_ord_id = ""
+            self._exit_reason = ""
 
     def on_market_data(self, data: MarketData) -> None:
         if data.symbol.upper() != self.symbol:
@@ -257,6 +325,7 @@ class BasicMarketMaker:
 
         if abs(self._position_qty) > 1e-12:
             self._maybe_fast_invalidate(data=data, now_mono=now_mono)
+            self._maybe_exit_position(data=data, now_mono=now_mono, now_ms=now_ms)
             return
 
         if self._cooldown_sec > 0.0 and self._last_entry_place_monotonic > 0.0:
@@ -277,12 +346,25 @@ class BasicMarketMaker:
         bid_sz = float(getattr(data, "bid_size", 0.0) or 0.0)
         ask_sz = float(getattr(data, "ask_size", 0.0) or 0.0)
         delta = bid_sz - ask_sz
+        denom = bid_sz + ask_sz
+        imbalance = (delta / denom) if denom > 1e-12 else 0.0
 
         return {
             "spread": spread_ticks,
             "mid_price": float(data.mid_price),
             "delta": delta,
+            "imbalance": float(imbalance),
         }
+
+    def _trend_move_ticks(self, *, now_ms: float, mid: float) -> float:
+        """
+        Price confirmation: mid move in ticks over last N updates.
+        Uses `_mid_hist` which stores (ms, mid).
+        """
+        if len(self._mid_hist) < self._trend_lookback:
+            return 0.0
+        ref_mid = float(self._mid_hist[-self._trend_lookback][1])
+        return (float(mid) - ref_mid) / self._tick_size
 
     def _effective_max_spread(self) -> float:
         max_spread = float(self._base_max_spread)
@@ -341,6 +423,7 @@ class BasicMarketMaker:
         spread = float(market_snapshot.get("spread", 0.0))
         delta = float(market_snapshot.get("delta", 0.0))
         mid_price = float(market_snapshot.get("mid_price", 0.0))
+        imbalance = float(market_snapshot.get("imbalance", 0.0))
 
         max_spread = self._effective_max_spread()
         delta_thr = float(self._base_delta_threshold)
@@ -370,17 +453,33 @@ class BasicMarketMaker:
 
         decision = "NONE"
         reason = "score_below_threshold"
-        if score >= score_thr:
+        # Noise filters (spread/imbalance) + confirmation by recent mid move.
+        # We ignore spread==0 (crossed/locked) and very wide spreads.
+        trend_ticks = self._trend_move_ticks(now_ms=(now_mono * 1000.0), mid=mid_price)
+        if spread <= 0.0 or spread < self._min_entry_spread or spread > self._max_entry_spread:
+            decision = "NONE"
+            reason = "bad_spread_for_entry"
+        elif abs(imbalance) < self._min_abs_imbalance:
+            decision = "NONE"
+            reason = "imbalance_too_small"
+        elif score < score_thr:
+            decision = "NONE"
+            reason = "score_below_threshold"
+        else:
+            # Direction: imbalance + delta must align, and mid must have moved in that direction.
+            dir_imb = _sign(imbalance)
             dir_delta = _sign(delta)
-            if dir_delta > 0:
+            dir_trend = _sign(trend_ticks) if abs(trend_ticks) >= self._min_trend_move_ticks else 0
+
+            if dir_imb > 0 and imbalance >= self._imbalance_threshold and dir_delta > 0 and dir_trend > 0:
                 decision = "LONG"
-                reason = "score_pass"
-            elif dir_delta < 0:
+                reason = "score_pass_confirmed"
+            elif dir_imb < 0 and imbalance <= -self._imbalance_threshold and dir_delta < 0 and dir_trend < 0:
                 decision = "SHORT"
-                reason = "score_pass"
+                reason = "score_pass_confirmed"
             else:
                 decision = "NONE"
-                reason = "direction_undefined"
+                reason = "direction_not_confirmed"
 
         if decision == "NONE":
             self.metrics.bump_skip(reason)
@@ -396,6 +495,8 @@ class BasicMarketMaker:
             "mid": float(mid_price),
             "delta": float(delta),
             "delta_score": float(delta_score),
+            "imbalance": float(imbalance),
+            "trend_ticks": float(trend_ticks),
             # deficits ("what missing")
             "need_spread": float(max(0.0, spread - max_spread)),
             "need_delta": float(max(0.0, delta_thr - abs(delta))),
@@ -403,9 +504,34 @@ class BasicMarketMaker:
         }
         return decision, row
 
+    def _compute_score_components(self, market_snapshot: dict[str, float]) -> tuple[float, float, float, float, float]:
+        """
+        Pure scoring helper (no metrics, no fallback side effects).
+        Returns: (score, delta_score, spread, max_spread, mid_price)
+        """
+        spread = float(market_snapshot.get("spread", 0.0))
+        delta = float(market_snapshot.get("delta", 0.0))
+        mid_price = float(market_snapshot.get("mid_price", 0.0))
+
+        max_spread = self._effective_max_spread()
+        delta_thr = float(self._base_delta_threshold)
+        if delta_thr <= 0.0:
+            delta_thr = 1e-6
+
+        spread_score = _clamp(1.0 - (spread / max_spread), 0.0, 1.0)
+        delta_score = min(1.0, abs(delta) / max(delta_thr, 1e-6))
+        score = self._w_spread * spread_score + self._w_delta * delta_score
+
+        if spread > max_spread:
+            score -= self._penalty_wide_spread
+        if abs(delta) < delta_thr:
+            score -= self._penalty_low_delta
+        score = _clamp(score, -2.0, 2.0)
+        return float(score), float(delta_score), float(spread), float(max_spread), float(mid_price)
+
     def _log_decision(self, row: dict[str, float | str]) -> None:
         self.logger.info(
-            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f spread=%.2f/%.2f mid=%.4f delta=%.2f/%.2f delta_score=%.3f need(delta=%.2f spread=%.2f)",
+            "[MM][ENTRY_DECISION] symbol=%s mode=%s decision=%s reason=%s score=%.3f/%.3f spread=%.2f/%.2f mid=%.4f delta=%.2f/%.2f delta_score=%.3f imb=%.3f trend=%.2f need(delta=%.2f spread=%.2f)",
             str(row.get("symbol", "")),
             str(row.get("mode", "")),
             str(row.get("decision", "")),
@@ -418,6 +544,8 @@ class BasicMarketMaker:
             float(row.get("delta", 0.0)),
             float(row.get("delta_thr", 0.0)),
             float(row.get("delta_score", 0.0)),
+            float(row.get("imbalance", 0.0)),
+            float(row.get("trend_ticks", 0.0)),
             float(row.get("need_delta", 0.0)),
             float(row.get("need_spread", 0.0)),
         )
@@ -496,6 +624,80 @@ class BasicMarketMaker:
             self._force_exit(data=data, now_mono=now_mono, reason="fast_invalidation")
 
     def _force_exit(self, *, data: MarketData, now_mono: float, reason: str) -> None:
+        # Kept for fast-invalidation; delegates to unified exit sender.
+        self._send_exit_order(data=data, now_mono=now_mono, reason=reason, bypass_risk=True)
+
+    def _maybe_exit_position(self, *, data: MarketData, now_mono: float, now_ms: float) -> None:
+        if abs(self._position_qty) <= 1e-12:
+            return
+        if self._exit_in_flight and (now_mono - self._exit_last_send_mono) < 0.25:
+            return
+
+        snapshot = self._compute_features(data=data, now_ms=now_ms)
+        score, delta_score, spread, _max_spread, mid = self._compute_score_components(snapshot)
+        holding = (now_mono - self._entry_monotonic) if self._entry_monotonic > 0.0 else 0.0
+        imbalance = float(snapshot.get("imbalance", 0.0))
+
+        # Unrealized in ticks based on mid (mark)
+        if abs(self._entry_price) > 1e-12 and self._entry_sign != 0:
+            pnl_ticks = ((mid - self._entry_price) / self._tick_size) * float(self._entry_sign)
+        else:
+            pnl_ticks = 0.0
+        self._best_favorable_ticks = max(float(self._best_favorable_ticks), float(pnl_ticks))
+
+        reason = ""
+        # Hard exits: TP/SL
+        if not reason and self._tp_ticks > 0.0 and pnl_ticks >= self._tp_ticks:
+            reason = "take_profit"
+        if not reason and self._sl_ticks > 0.0 and pnl_ticks <= -self._sl_ticks:
+            reason = "stop_loss"
+        # Trailing: once in profit >= start, exit on retrace >= gap
+        if (
+            not reason
+            and self._trail_start > 0.0
+            and self._trail_gap > 0.0
+            and float(self._best_favorable_ticks) >= self._trail_start
+        ):
+            retrace = float(self._best_favorable_ticks) - float(pnl_ticks)
+            if retrace >= self._trail_gap:
+                reason = "trailing_stop"
+        # Exit on strong reversal of imbalance
+        if not reason and self._exit_imbalance_reversal > 0.0:
+            if self._position_qty > 0 and imbalance <= -self._exit_imbalance_reversal:
+                reason = "imbalance_reversal"
+            elif self._position_qty < 0 and imbalance >= self._exit_imbalance_reversal:
+                reason = "imbalance_reversal"
+        # Optional: score-based exit disabled by default (caused tiny churn losses)
+        if not reason and self._exit_on_score_enabled and score < self._exit_threshold:
+            reason = "score_below_exit_threshold"
+        if not reason and self._max_holding_sec > 0.0 and holding >= self._max_holding_sec:
+            reason = "max_holding_time"
+        if not reason and self._max_exit_spread is not None and spread > float(self._max_exit_spread):
+            reason = "spread_too_wide"
+        if not reason and self._force_time_exit_enabled and self._force_time_exit_after_sec > 0.0 and holding >= self._force_time_exit_after_sec:
+            reason = "force_time_exit"
+
+        if not reason:
+            return
+
+        self.logger.debug(
+            "[MM][EXIT_DEBUG] symbol=%s reason=%s score=%.3f exit_thr=%.3f delta_score=%.3f spread=%.2f mid=%.4f holding_sec=%.3f pos_qty=%.4f pnl_ticks=%.2f best_ticks=%.2f imb=%.3f",
+            self.symbol,
+            reason,
+            float(score),
+            float(self._exit_threshold),
+            float(delta_score),
+            float(spread),
+            float(mid),
+            float(holding),
+            float(self._position_qty),
+            float(pnl_ticks),
+            float(self._best_favorable_ticks),
+            float(imbalance),
+        )
+        self._send_exit_order(data=data, now_mono=now_mono, reason=reason, bypass_risk=True)
+
+    def _send_exit_order(self, *, data: MarketData, now_mono: float, reason: str, bypass_risk: bool) -> None:
         qty = abs(self._position_qty)
         if qty <= 1e-12:
             return
@@ -509,10 +711,14 @@ class BasicMarketMaker:
             price=price,
             market=self.market,
             lot_size=1,
-            bypass_risk=True,
+            bypass_risk=bool(bypass_risk),
         )
         cl_ord_id = self.gateway.send_order(req)
         self._last_entry_place_monotonic = now_mono
+        self._exit_in_flight = True
+        self._exit_last_send_mono = now_mono
+        self._exit_cl_ord_id = str(cl_ord_id or "")
+        self._exit_reason = str(reason or "")
         self.logger.info(
             "[MM][EXIT] symbol=%s reason=%s side=%s qty=%.4f px=%.4f cl_ord_id=%s",
             self.symbol,
