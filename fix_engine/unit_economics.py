@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime, timezone
 from typing import Dict, List
 
-from order_models import MarketType
+from fix_engine.order_models import MarketType
 
 getcontext().prec = 28
 QTY_Q = Decimal("0.0001")

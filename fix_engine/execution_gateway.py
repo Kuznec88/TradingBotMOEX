@@ -9,13 +9,13 @@ from threading import RLock
 from typing import Any, Callable
 import re
 
-from fix_shim import SyntheticExecutionReport
-from market_data.models import MarketData
-from order_manager import OrderManager
-from structured_logging import log_event
-from order_models import MarketType, OrderRequest
-from position_manager import PositionManager
-from risk_manager import RiskManager
+from fix_engine.fix_shim import SyntheticExecutionReport
+from fix_engine.market_data.models import MarketData
+from fix_engine.order_manager import OrderManager
+from fix_engine.structured_logging import log_event
+from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.position_manager import PositionManager
+from fix_engine.risk_manager import RiskManager
 
 
 @dataclass

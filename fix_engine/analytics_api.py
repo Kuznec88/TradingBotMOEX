@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from economics_store import EconomicsStore
+from fix_engine.economics_store import EconomicsStore
 
 
 class TradingAnalyticsAPI:

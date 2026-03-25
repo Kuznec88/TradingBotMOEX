@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 
-from market_data.models import MarketData
+from fix_engine.market_data.models import MarketData
 
 
 def _utc_ms(dt: datetime) -> int:

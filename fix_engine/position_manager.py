@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from order_manager import OrderManager
+from fix_engine.order_manager import OrderManager
 
 
 @dataclass(frozen=True)

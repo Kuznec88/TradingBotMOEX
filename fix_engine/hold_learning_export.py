@@ -11,8 +11,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from adaptive_learning_targets import AdaptiveLearningTargets, load_adaptive_learning_targets
-from learning_patch_state import (
+from fix_engine.adaptive_learning_targets import AdaptiveLearningTargets, load_adaptive_learning_targets
+from fix_engine.learning_patch_state import (
     LearningPatchState,
     align_patch_state_to_targets,
     apply_learning_adjustment,

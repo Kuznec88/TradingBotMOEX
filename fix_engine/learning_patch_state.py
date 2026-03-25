@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from adaptive_learning_targets import AdaptiveLearningTargets
+from fix_engine.adaptive_learning_targets import AdaptiveLearningTargets
 
 
 def _utc_now_iso() -> str:

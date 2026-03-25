@@ -109,18 +109,18 @@ except ModuleNotFoundError:
     sys.modules["quickfix44"] = _fix44
     import quickfix as fix
 
-from analytics_api import TradingAnalyticsAPI
-from economics_store import EconomicsStore
-from execution_gateway import ExecutionGateway
-from failure_monitor import FailureMonitor
-from market_data.market_data_engine import MarketDataEngine
-from market_data.models import MarketData
-from market_making import BasicMarketMaker
-from order_manager import ManagedOrder, OrderManager
-from order_models import MarketType, OrderRequest
-from position_manager import PositionManager
-from risk_manager import RiskManager
-from unit_economics import UnitEconomicsCalculator
+from fix_engine.analytics_api import TradingAnalyticsAPI
+from fix_engine.economics_store import EconomicsStore
+from fix_engine.execution_gateway import ExecutionGateway
+from fix_engine.failure_monitor import FailureMonitor
+from fix_engine.market_data.market_data_engine import MarketDataEngine
+from fix_engine.market_data.models import MarketData
+from fix_engine.market_making import BasicMarketMaker
+from fix_engine.order_manager import ManagedOrder, OrderManager
+from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.position_manager import PositionManager
+from fix_engine.risk_manager import RiskManager
+from fix_engine.unit_economics import UnitEconomicsCalculator
 
 
 class _NoopExecutionEngine:

@@ -5,9 +5,9 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from execution_gateway import ExecutionGateway
-from market_data.models import MarketData
-from order_manager import OrderManager
+from fix_engine.execution_gateway import ExecutionGateway
+from fix_engine.market_data.models import MarketData
+from fix_engine.order_manager import OrderManager
 
 
 class FailureMonitor:

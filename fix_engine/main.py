@@ -1,28 +1,46 @@
 from __future__ import annotations
 
-import logging
-import math
-import os
-import time
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from threading import RLock
+from fix_engine.app.runtime import run
 
-from analytics_api import TradingAnalyticsAPI
-from economics_store import EconomicsStore
-from execution_gateway import ExecutionGateway
-from failure_monitor import FailureMonitor
-from market_making import BasicMarketMaker
-from market_data.market_data_engine import MarketDataEngine
-from market_data.models import MarketData
-from quote_history_store import QuoteHistoryStore
-from md_health_monitor import MdHealthMonitor
-from order_models import MarketType
-from order_manager import OrderManager
-from position_manager import PositionManager
-from risk_manager import RiskManager
-from structured_logging import StructuredLoggingRuntime, configure_structured_logging, log_event
-from unit_economics import UnitEconomicsCalculator, _d
+
+if __name__ == "__main__":
+    run()
+
+# from __future__ import annotations
+
+from fix_engine.app.runtime import run
+
+
+if __name__ == "__main__":
+    run()
+
+# from __future__ import annotations
+
+from fix_engine.app.runtime import run
+
+
+if __name__ == "__main__":
+    run()
+
+# from __future__ import annotations
+
+from fix_engine.app.runtime import run
+
+
+if __name__ == "__main__":
+    run()
+
+#
+
+from fix_engine.app.runtime import run
+
+
+if __name__ == "__main__":
+    run()
+
+#
+
+from fix_engine.app.runtime import run
 
 
 class SimpleStrategy:
@@ -142,175 +160,13 @@ class SimpleStrategy:
         return math.sqrt(variance)
 
 
-class FillAdverseSelectionTracker:
-    def __init__(self, store: EconomicsStore) -> None:
-        self._store = store
-        self._lock = RLock()
-        self._pending: dict[str, dict[str, object]] = {}
-        self._horizons = {
-            "px_10ms": timedelta(milliseconds=10),
-            "px_100ms": timedelta(milliseconds=100),
-            "px_500ms": timedelta(milliseconds=500),
-            "px_1s": timedelta(seconds=1),
-        }
-
-    def register_fill(
-        self,
-        *,
-        trade_id: str,
-        side: str,
-        qty: float,
-        fill_price: float,
-        symbol: str,
-        fill_ts: datetime,
-    ) -> None:
-        with self._lock:
-            self._pending[trade_id] = {
-                "trade_id": trade_id,
-                "side": side,
-                "qty": float(qty),
-                "fill_price": float(fill_price),
-                "symbol": symbol.upper(),
-                "fill_ts": fill_ts,
-                "px_10ms": None,
-                "px_100ms": None,
-                "px_500ms": None,
-                "px_1s": None,
-            }
-
-    def on_market_data(self, data: MarketData) -> None:
-        now_ts = data.timestamp if data.timestamp.tzinfo else data.timestamp.replace(tzinfo=timezone.utc)
-        finished: list[str] = []
-        with self._lock:
-            for trade_id, row in self._pending.items():
-                if row["symbol"] != data.symbol.upper():
-                    continue
-                fill_ts = row["fill_ts"]
-                for key, horizon in self._horizons.items():
-                    if row[key] is not None:
-                        continue
-                    if now_ts >= fill_ts + horizon:
-                        row[key] = float(data.mid_price)
-                if (
-                    row["px_10ms"] is not None
-                    and row["px_100ms"] is not None
-                    and row["px_500ms"] is not None
-                    and row["px_1s"] is not None
-                ):
-                    adverse_pnl, adverse_fill = self._compute_adverse(row)
-                    self._store.update_adverse_selection(
-                        trade_id=trade_id,
-                        px_10ms=float(row["px_10ms"]),
-                        px_100ms=float(row["px_100ms"]),
-                        px_500ms=float(row["px_500ms"]),
-                        px_1s=float(row["px_1s"]),
-                        adverse_pnl=adverse_pnl,
-                        adverse_fill=adverse_fill,
-                    )
-                    finished.append(trade_id)
-            for trade_id in finished:
-                self._pending.pop(trade_id, None)
-
-    @staticmethod
-    def _compute_adverse(row: dict[str, object]) -> tuple[float, bool]:
-        side = str(row["side"])
-        qty = float(row["qty"])
-        fill = float(row["fill_price"])
-        px_1s = float(row["px_1s"])
-        if side == "1":
-            adverse_pnl = (px_1s - fill) * qty
-        else:
-            adverse_pnl = (fill - px_1s) * qty
-        return adverse_pnl, adverse_pnl < 0.0
-
-
 def _format_fix_for_log(raw_fix: str) -> str:
     # SOH delimiter -> visible pipe for human-readable troubleshooting.
     return raw_fix.replace("\x01", "|")
 
 
-def setup_logging(base_dir: Path, *, paper_execution: bool) -> StructuredLoggingRuntime:
-    return configure_structured_logging(base_dir=base_dir, paper_execution=paper_execution, logger_name="fix_engine")
-
-
-def _read_execution_mode(cfg_path: Path) -> str:
-    """LIVE = real routing (disabled in this build); PAPER_REAL_MARKET = real MD + local fills (synthetic or stream book)."""
-    value = (_read_default_optional_setting(cfg_path, "ExecutionMode") or "").strip().upper()
-    if value == "SIMULATION":
-        return "PAPER_REAL_MARKET"
-    if value in {"LIVE", "PAPER_REAL_MARKET"}:
-        return value
-    return "PAPER_REAL_MARKET"
-
-
-def _read_default_optional_setting(cfg_path: Path, key: str) -> str | None:
-    for raw_line in cfg_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            if line[1:-1].strip().upper() == "SESSION":
-                break
-            continue
-        k, v = line.split("=", 1)
-        if k.strip() == key:
-            value = v.strip()
-            return value or None
-    return None
-
-
-def _read_float(cfg_path: Path, key: str, default: float) -> float:
-    value = _read_default_optional_setting(cfg_path, key)
-    if not value:
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-def _read_int(cfg_path: Path, key: str, default: int) -> int:
-    value = _read_default_optional_setting(cfg_path, key)
-    if not value:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-def _read_bool(cfg_path: Path, key: str, default: bool) -> bool:
-    value = _read_default_optional_setting(cfg_path, key)
-    if value is None:
-        return default
-    return value.strip().upper() in {"Y", "YES", "TRUE", "1", "ON"}
-
-
-def _read_csv_list(cfg_path: Path, key: str, default: list[str]) -> list[str]:
-    value = _read_default_optional_setting(cfg_path, key)
-    if not value:
-        return list(default)
-    items = [part.strip() for part in value.split(",")]
-    return [x for x in items if x]
-
-
-def _read_str(cfg_path: Path, key: str, default: str) -> str:
-    value = _read_default_optional_setting(cfg_path, key)
-    if value is None:
-        return default
-    return value.strip() or default
-
-
 def _source_to_market(source: str) -> MarketType:
     return MarketType.FORTS if source == "FORTS" else MarketType.EQUITIES
-
-
-class _NoopExecutionEngine:
-    def send_order(self, *args: object, **kwargs: object) -> str:
-        raise RuntimeError("Real exchange order routing is removed. Use paper execution only.")
-
-    def cancel_order(self, *args: object, **kwargs: object) -> str:
-        raise RuntimeError("Real exchange order routing is removed. Use paper execution only.")
 
 
 def run() -> None:
@@ -773,8 +629,8 @@ def run() -> None:
                 latency_ms=round(latency_ms, 3),
             )
 
-    equities_engine = _NoopExecutionEngine()
-    forts_engine = _NoopExecutionEngine()
+    equities_engine = NoopExecutionEngine()
+    forts_engine = NoopExecutionEngine()
     sim_slippage_bps = _read_float(cfg_for_optional, "PaperSlippageBps", 2.0)
     sim_slippage_max_bps = _read_float(cfg_for_optional, "PaperSlippageMaxBps", 25.0)
     sim_vol_slippage_multiplier = _read_float(cfg_for_optional, "PaperVolatilitySlippageMultiplier", 1.5)
@@ -953,113 +809,22 @@ def run() -> None:
         )
 
     if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:
-        from tbank_preflight import load_sandbox_token, verify_market_data_readonly
-        from tbank_sandbox_feed import run_tbank_sandbox_market_data
-        from tools.export_session_metrics import print_post_run_summary
+        from fix_engine.market_data.tbank_paper_session import run_tbank_paper_session
 
-        md_health: MdHealthMonitor | None = None
-        if execution_mode != "PAPER_REAL_MARKET":
-            raise RuntimeError(
-                f"Sandbox paper session requires ExecutionMode=PAPER_REAL_MARKET, got {execution_mode!r}"
-            )
-        if not gateway._uses_local_sim_execution:
-            raise RuntimeError("FATAL: gateway must use local synthetic execution for paper sandbox run")
-        log_event(
-            logger,
-            level=logging.INFO,
-            component="Preflight",
-            event="paper_execution_guard",
-            execution_mode=gateway.execution_mode,
-            uses_local_sim_execution=gateway._uses_local_sim_execution,
-        )
-
-        tbank_host = _read_str(cfg_for_optional, "TBankSandboxHost", "invest-public-api.tinkoff.ru:443")
-        tbank_token = os.getenv("TINKOFF_TOKEN", "").strip() or os.getenv("TINKOFF_SANDBOX_TOKEN", "").strip()
-        if not tbank_token:
-            _local_secrets = base_dir / "settings.local.cfg"
-            if _local_secrets.exists():
-                tbank_token = _read_str(_local_secrets, "TBankSandboxToken", "").strip()
-        if not tbank_token:
-            tbank_token = _read_str(cfg_for_optional, "TBankSandboxToken", "").strip()
-        tbank_instrument_id = _read_str(cfg_for_optional, "TBankInstrumentId", "")
-        tbank_symbol = _read_str(cfg_for_optional, "TBankSymbol", "SBER")
-        tbank_depth = _read_int(cfg_for_optional, "TBankOrderBookDepth", 1)
-        tbank_include_trades = _read_bool(cfg_for_optional, "TBankIncludeTrades", True)
-        tbank_run_duration_sec = _read_int(cfg_for_optional, "TBankRunDurationSec", 0)
-        tbank_md_reconnect_initial_sec = _read_float(cfg_for_optional, "TBankMdReconnectInitialSec", 1.0)
-        tbank_md_reconnect_max_sec = _read_float(cfg_for_optional, "TBankMdReconnectMaxSec", 60.0)
-        tbank_md_stale_reconnect_sec = _read_float(cfg_for_optional, "TBankMdStaleReconnectSec", 90.0)
-        _env_dur = os.getenv("TBANK_RUN_DURATION_SEC", "").strip()
-        if _env_dur:
-            try:
-                tbank_run_duration_sec = int(_env_dur)
-            except ValueError:
-                logger.warning("TBANK_RUN_DURATION_SEC ignored (not an integer): %s", _env_dur)
-
-        _marker_path = base_dir / "log" / "session_start_marker.txt"
-        _marker_path.parent.mkdir(parents=True, exist_ok=True)
-        _marker_path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
-
-        _tok = load_sandbox_token(base_dir, _read_str)
-        if not _tok.strip():
-            raise RuntimeError("PREFLIGHT: T-Invest token not loaded (TINKOFF_TOKEN / settings.local.cfg TBankSandboxToken)")
-        verify_market_data_readonly(
-            token=_tok,
-            host=tbank_host,
-            instrument_id=tbank_instrument_id,
-            logger=logger,
-        )
-        log_event(
-            logger,
-            level=logging.INFO,
-            component="Preflight",
-            event="stream_ready",
-            detail="Tinkoff market-data unary OK; starting MarketDataStream (orders disabled)",
-        )
-
-        md_health = MdHealthMonitor(
+        run_tbank_paper_session(
+            base_dir=base_dir,
+            cfg_for_optional=cfg_for_optional,
+            execution_mode=execution_mode,
+            gateway=gateway,
             market_data_engine=market_data_engine,
             logger=logger,
-            interval_sec=5.0,
+            failure_monitor=failure_monitor,
+            logging_runtime=logging_runtime,
+            read_str=_read_str,
+            read_int=_read_int,
+            read_float=_read_float,
+            read_bool=_read_bool,
         )
-        md_health.start()
-        if failure_monitor is not None:
-            failure_monitor.start()
-        logger.info(
-            "[TBANK] data_provider=%s host=%s instrument_id=%s symbol=%s run_duration_sec=%s",
-            data_provider,
-            tbank_host,
-            tbank_instrument_id,
-            tbank_symbol,
-            tbank_run_duration_sec,
-        )
-        try:
-            run_tbank_sandbox_market_data(
-                token=tbank_token,
-                host=tbank_host,
-                instrument_id=tbank_instrument_id,
-                symbol=tbank_symbol,
-                orderbook_depth=tbank_depth,
-                include_trades=tbank_include_trades,
-                on_raw_market_data=market_data_engine.update_market_data,
-                logger=logger,
-                run_duration_sec=tbank_run_duration_sec,
-                reconnect_initial_delay_sec=tbank_md_reconnect_initial_sec,
-                reconnect_max_delay_sec=tbank_md_reconnect_max_sec,
-                stale_reconnect_sec=tbank_md_stale_reconnect_sec,
-            )
-        except KeyboardInterrupt:
-            logger.info("Interrupted by user.")
-        finally:
-            if md_health is not None:
-                md_health.stop()
-            if failure_monitor is not None:
-                failure_monitor.stop()
-            logging_runtime.listener.stop()
-            try:
-                print_post_run_summary(base_dir)
-            except Exception as exc:
-                logger.warning("post_run_summary_failed: %s", exc)
         return
 
     raise RuntimeError(

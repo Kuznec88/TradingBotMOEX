@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Callable
 
-from market_data.models import MarketData
-from structured_logging import log_event
+from fix_engine.market_data.models import MarketData
+from fix_engine.structured_logging import log_event
 
 
 class MarketDataEngine:

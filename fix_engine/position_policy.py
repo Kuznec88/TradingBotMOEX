@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from adaptive_learning_targets import AdaptiveLearningTargets
+from fix_engine.adaptive_learning_targets import AdaptiveLearningTargets
 
 
 @dataclass

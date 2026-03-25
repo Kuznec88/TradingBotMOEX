@@ -1,4 +1,583 @@
-from __future__ import annotations
+# from __future__ import annotations
+
+# Backward-compatible shim.
+# The momentum-only strategy now lives in `fix_engine.strategy.momentum_mm`.
+
+from fix_engine.strategy.momentum_mm import BasicMarketMaker
+
+__all__ = ["BasicMarketMaker"]
+
+# Always export the momentum-only implementation, regardless of any legacy code
+# that may have been appended below during iterative refactors.
+from fix_engine.strategy.momentum_mm import BasicMarketMaker as _MomentumBasicMarketMaker  # noqa: E402
+
+BasicMarketMaker = _MomentumBasicMarketMaker
+
+# from __future__ import annotations
+
+import logging
+import time
+from collections import deque
+
+from fix_engine.execution_gateway import ExecutionGateway
+from fix_engine.market_data.models import MarketData
+from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.position_manager import PositionManager
+
+
+class BasicMarketMaker:
+    """
+    Momentum-only active trader:
+    signal -> aggressive entry -> fast invalidation -> exit
+    """
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        lot_size: float,
+        market: MarketType,
+        gateway: ExecutionGateway,
+        position_manager: PositionManager,
+        logger: logging.Logger,
+        tick_size: float,
+        spread_threshold: float,
+        move_threshold: float,
+        velocity_threshold: float,
+        delta_threshold: float,
+        imbalance_threshold: float,
+        cooldown_ms: int,
+        one_position_only: bool = True,
+        entry_decision_sink: object | None = None,
+        economics_store: object | None = None,
+        **_legacy_kwargs: object,
+    ) -> None:
+        self.symbol = symbol.upper()
+        self.lot_size = float(lot_size)
+        self.market = market
+        self.gateway = gateway
+        self.position_manager = position_manager
+        self.logger = logger
+
+        self._tick_size = max(1e-12, float(tick_size))
+        self._spread_threshold = max(0.0, float(spread_threshold))
+        self._move_threshold = max(0.0, float(move_threshold))
+        self._velocity_threshold = max(0.0, float(velocity_threshold))
+        self._delta_threshold = max(0.0, float(delta_threshold))
+        self._imbalance_threshold = max(0.0, float(imbalance_threshold))
+        self._cooldown_sec = max(0.0, float(cooldown_ms) / 1000.0)
+
+        self._one_position_only = bool(one_position_only)
+
+        # Minimal position state
+        self._position_qty = 0.0
+        self._entry_price = 0.0
+        self._entry_monotonic = 0.0
+        self._immediate_ticks_seen = 0
+        self._entry_mid_price = 0.0
+
+        # Feature window (single snapshot decision uses recent move)
+        self._window_ms = 200.0
+        self._mid_hist: deque[tuple[float, float]] = deque(maxlen=512)  # (mono_ms, mid)
+        self._last_entry_place_monotonic = 0.0
+
+        # Explicitly unused in momentum-only mode (kept for backward compatibility with wiring)
+        _ = entry_decision_sink
+        _ = economics_store
+
+    def on_execution_report(self, state: dict[str, object]) -> None:
+        if str(state.get("symbol", "")).upper() != self.symbol:
+            return
+        status_new = str(state.get("status_new", ""))
+        if status_new not in {"PARTIALLY_FILLED", "FILLED"}:
+            return
+        last_qty = float(state.get("last_qty", 0) or 0)
+        if last_qty <= 0:
+            return
+        side = str(state.get("side", ""))
+        last_px = state.get("last_px", None)
+        avg_px = state.get("avg_px", None)
+        fill_px = float(last_px or avg_px or 0.0)
+
+        if side == "1":  # BUY
+            self._position_qty += last_qty
+        else:  # SELL
+            self._position_qty -= last_qty
+
+        if abs(self._entry_price) < 1e-12 and abs(self._position_qty) > 1e-12:
+            self._entry_price = fill_px
+            self._entry_monotonic = time.perf_counter()
+            self._immediate_ticks_seen = 0
+            self._entry_mid_price = 0.0
+
+        if abs(self._position_qty) < 1e-12:
+            self._position_qty = 0.0
+            self._entry_price = 0.0
+            self._entry_monotonic = 0.0
+            self._immediate_ticks_seen = 0
+            self._entry_mid_price = 0.0
+
+    def on_market_data(self, data: MarketData) -> None:
+        if data.symbol.upper() != self.symbol:
+            return
+
+        now_mono = time.perf_counter()
+        now_ms = now_mono * 1000.0
+
+        mid = float(data.mid_price)
+        self._mid_hist.append((now_ms, mid))
+
+        # Exit first: fast invalidation (first 1 tick against us).
+        if abs(self._position_qty) > 1e-12:
+            self._maybe_fast_invalidate(data=data, now_mono=now_mono)
+            return
+
+        # Cooldown between entry attempts
+        if self._cooldown_sec > 0.0 and self._last_entry_place_monotonic > 0.0:
+            if (now_mono - self._last_entry_place_monotonic) < self._cooldown_sec:
+                return
+
+        snapshot = self._compute_features(data=data, now_ms=now_ms)
+        decision = self.evaluate_entry_signal(snapshot)
+        self._log_decision(snapshot=snapshot, decision=decision)
+        if decision == "NONE":
+            return
+
+        self._send_aggressive_entry(decision=decision, data=data, now_mono=now_mono)
+
+    def _compute_features(self, *, data: MarketData, now_ms: float) -> dict[str, float]:
+        spread_ticks = float(data.spread) / self._tick_size
+
+        cutoff = now_ms - self._window_ms
+        old_mid = float(data.mid_price)
+        old_ms = now_ms
+        for ts_ms, mid in self._mid_hist:
+            if ts_ms >= cutoff:
+                old_ms = ts_ms
+                old_mid = mid
+                break
+
+        move_ticks = (float(data.mid_price) - float(old_mid)) / self._tick_size
+        dt_ms = max(1.0, now_ms - old_ms)
+        velocity = move_ticks / dt_ms  # ticks/ms
+
+        bid_sz = float(getattr(data, "bid_size", 0.0) or 0.0)
+        ask_sz = float(getattr(data, "ask_size", 0.0) or 0.0)
+        delta = bid_sz - ask_sz
+        denom = bid_sz + ask_sz
+        imbalance = (delta / denom) if denom > 1e-12 else 0.0
+
+        return {
+            "spread": spread_ticks,
+            "price_move_ticks": move_ticks,
+            "velocity": velocity,
+            "delta": delta,
+            "imbalance": imbalance,
+            "spread_threshold": self._spread_threshold,
+            "move_threshold": self._move_threshold,
+            "velocity_threshold": self._velocity_threshold,
+            "delta_threshold": self._delta_threshold,
+            "imbalance_threshold": self._imbalance_threshold,
+        }
+
+    def evaluate_entry_signal(self, market_snapshot: dict[str, float]) -> str:
+        spread = float(market_snapshot.get("spread", 0.0))
+        price_move_ticks = float(market_snapshot.get("price_move_ticks", 0.0))
+        velocity = float(market_snapshot.get("velocity", 0.0))
+        delta = float(market_snapshot.get("delta", 0.0))
+        imbalance = float(market_snapshot.get("imbalance", 0.0))
+
+        if spread > float(market_snapshot.get("spread_threshold", self._spread_threshold)):
+            return "NONE"
+        if abs(price_move_ticks) < float(market_snapshot.get("move_threshold", self._move_threshold)):
+            return "NONE"
+        if abs(velocity) < float(market_snapshot.get("velocity_threshold", self._velocity_threshold)):
+            return "NONE"
+        if abs(delta) < float(market_snapshot.get("delta_threshold", self._delta_threshold)):
+            return "NONE"
+        if abs(imbalance) < float(market_snapshot.get("imbalance_threshold", self._imbalance_threshold)):
+            return "NONE"
+        if price_move_ticks > 0.0:
+            return "LONG"
+        if price_move_ticks < 0.0:
+            return "SHORT"
+        return "NONE"
+
+    def _log_decision(self, *, snapshot: dict[str, float], decision: str) -> None:
+        self.logger.info(
+            "[MM][ENTRY_DECISION] symbol=%s decision=%s spread=%.2f move_ticks=%.2f vel=%.6f delta=%.2f imb=%.3f",
+            self.symbol,
+            decision,
+            float(snapshot.get("spread", 0.0)),
+            float(snapshot.get("price_move_ticks", 0.0)),
+            float(snapshot.get("velocity", 0.0)),
+            float(snapshot.get("delta", 0.0)),
+            float(snapshot.get("imbalance", 0.0)),
+        )
+
+    def _send_aggressive_entry(self, *, decision: str, data: MarketData, now_mono: float) -> None:
+        if self._one_position_only and abs(self._position_qty) > 1e-12:
+            return
+
+        side = "1" if decision == "LONG" else "2"
+        price = float(data.ask) if side == "1" else float(data.bid)
+
+        req = OrderRequest(
+            symbol=self.symbol,
+            side=side,
+            qty=self.lot_size,
+            account="",
+            price=price,
+            market=self.market,
+            lot_size=1,
+            bypass_risk=False,
+        )
+        cl_ord_id = self.gateway.send_order(req)
+        self._last_entry_place_monotonic = now_mono
+        self.logger.info(
+            "[MM][ENTRY_EXECUTE] symbol=%s side=%s qty=%s px=%.4f cl_ord_id=%s",
+            self.symbol,
+            side,
+            self.lot_size,
+            price,
+            cl_ord_id,
+        )
+
+    def _maybe_fast_invalidate(self, *, data: MarketData, now_mono: float) -> None:
+        if self._entry_monotonic <= 0.0:
+            return
+        if self._immediate_ticks_seen >= 1:
+            return
+
+        mid = float(data.mid_price)
+        if self._entry_mid_price <= 0.0:
+            self._entry_mid_price = mid
+            self._immediate_ticks_seen = 1
+            return
+
+        if self._position_qty > 0:
+            adverse = (self._entry_mid_price - mid) / self._tick_size
+        else:
+            adverse = (mid - self._entry_mid_price) / self._tick_size
+
+        self._immediate_ticks_seen = 1
+        if adverse >= 1.0:
+            self._force_exit(data=data, now_mono=now_mono, reason="fast_invalidation")
+
+    def _force_exit(self, *, data: MarketData, now_mono: float, reason: str) -> None:
+        qty = abs(self._position_qty)
+        if qty <= 1e-12:
+            return
+        side = "2" if self._position_qty > 0 else "1"
+        price = float(data.bid) if side == "2" else float(data.ask)
+
+        req = OrderRequest(
+            symbol=self.symbol,
+            side=side,
+            qty=qty,
+            account="",
+            price=price,
+            market=self.market,
+            lot_size=1,
+            bypass_risk=True,
+        )
+        cl_ord_id = self.gateway.send_order(req)
+        self._last_entry_place_monotonic = now_mono
+        self.logger.info(
+            "[MM][EXIT] symbol=%s reason=%s side=%s qty=%.4f px=%.4f cl_ord_id=%s",
+            self.symbol,
+            reason,
+            side,
+            qty,
+            price,
+            cl_ord_id,
+        )
+
+# from __future__ import annotations
+
+import logging
+import time
+from collections import deque
+
+from fix_engine.execution_gateway import ExecutionGateway
+from fix_engine.market_data.models import MarketData
+from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.position_manager import PositionManager
+
+
+class _MomentumBasicMarketMaker:
+    """
+    Momentum-only active trader:
+    signal -> aggressive entry -> fast invalidation -> exit
+    """
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        lot_size: float,
+        market: MarketType,
+        gateway: ExecutionGateway,
+        position_manager: PositionManager,
+        logger: logging.Logger,
+        tick_size: float,
+        spread_threshold: float,
+        move_threshold: float,
+        velocity_threshold: float,
+        delta_threshold: float,
+        imbalance_threshold: float,
+        cooldown_ms: int,
+        one_position_only: bool = True,
+        entry_decision_sink: object | None = None,
+        economics_store: object | None = None,
+        **_legacy_kwargs: object,
+    ) -> None:
+        self.symbol = symbol.upper()
+        self.lot_size = float(lot_size)
+        self.market = market
+        self.gateway = gateway
+        self.position_manager = position_manager
+        self.logger = logger
+
+        self._tick_size = max(1e-12, float(tick_size))
+        self._spread_threshold = max(0.0, float(spread_threshold))
+        self._move_threshold = max(0.0, float(move_threshold))
+        self._velocity_threshold = max(0.0, float(velocity_threshold))
+        self._delta_threshold = max(0.0, float(delta_threshold))
+        self._imbalance_threshold = max(0.0, float(imbalance_threshold))
+        self._cooldown_sec = max(0.0, float(cooldown_ms) / 1000.0)
+
+        self._one_position_only = bool(one_position_only)
+
+        # Minimal position state
+        self._position_qty = 0.0
+        self._entry_price = 0.0
+        self._entry_monotonic = 0.0
+        self._immediate_ticks_seen = 0
+        self._entry_mid_price = 0.0
+
+        # Feature window (single snapshot decision uses recent move)
+        self._window_ms = 200.0
+        self._mid_hist: deque[tuple[float, float]] = deque(maxlen=512)  # (mono_ms, mid)
+        self._last_entry_place_monotonic = 0.0
+
+        # Explicitly unused in momentum-only mode (kept for backward compatibility with wiring)
+        _ = entry_decision_sink
+        _ = economics_store
+
+    def on_execution_report(self, state: dict[str, object]) -> None:
+        # Track fills into a single position number.
+        if str(state.get("symbol", "")).upper() != self.symbol:
+            return
+        status_new = str(state.get("status_new", ""))
+        if status_new not in {"PARTIALLY_FILLED", "FILLED"}:
+            return
+        last_qty = float(state.get("last_qty", 0) or 0)
+        if last_qty <= 0:
+            return
+        side = str(state.get("side", ""))
+        last_px = state.get("last_px", None)
+        avg_px = state.get("avg_px", None)
+        fill_px = float(last_px or avg_px or 0.0)
+
+        if side == "1":  # BUY
+            self._position_qty += last_qty
+        else:  # SELL
+            self._position_qty -= last_qty
+
+        # Track entry price only when opening from flat.
+        if abs(self._entry_price) < 1e-12 and abs(self._position_qty) > 1e-12:
+            self._entry_price = fill_px
+            self._entry_monotonic = time.perf_counter()
+            self._immediate_ticks_seen = 0
+            self._entry_mid_price = 0.0
+
+        if abs(self._position_qty) < 1e-12:
+            self._position_qty = 0.0
+            self._entry_price = 0.0
+            self._entry_monotonic = 0.0
+            self._immediate_ticks_seen = 0
+            self._entry_mid_price = 0.0
+
+    def on_market_data(self, data: MarketData) -> None:
+        if data.symbol.upper() != self.symbol:
+            return
+
+        now_mono = time.perf_counter()
+        now_ms = now_mono * 1000.0
+
+        mid = float(data.mid_price)
+        self._mid_hist.append((now_ms, mid))
+
+        # Exit first: fast invalidation (first 1 tick against us).
+        if abs(self._position_qty) > 1e-12:
+            self._maybe_fast_invalidate(data=data, now_mono=now_mono)
+            return
+
+        # Cooldown between entry attempts
+        if self._cooldown_sec > 0.0 and self._last_entry_place_monotonic > 0.0:
+            if (now_mono - self._last_entry_place_monotonic) < self._cooldown_sec:
+                return
+
+        snapshot = self._compute_features(data=data, now_ms=now_ms)
+        decision = self.evaluate_entry_signal(snapshot)
+        self._log_decision(snapshot=snapshot, decision=decision)
+        if decision == "NONE":
+            return
+
+        self._send_aggressive_entry(decision=decision, data=data, now_mono=now_mono)
+
+    def _compute_features(self, *, data: MarketData, now_ms: float) -> dict[str, float]:
+        spread_ticks = float(data.spread) / self._tick_size
+
+        # Oldest point within window
+        cutoff = now_ms - self._window_ms
+        old_mid = float(data.mid_price)
+        old_ms = now_ms
+        for ts_ms, mid in self._mid_hist:
+            if ts_ms >= cutoff:
+                old_ms = ts_ms
+                old_mid = mid
+                break
+
+        move_ticks = (float(data.mid_price) - float(old_mid)) / self._tick_size
+        dt_ms = max(1.0, now_ms - old_ms)
+        velocity = move_ticks / dt_ms  # ticks/ms
+
+        bid_sz = float(getattr(data, "bid_size", 0.0) or 0.0)
+        ask_sz = float(getattr(data, "ask_size", 0.0) or 0.0)
+        delta = bid_sz - ask_sz
+        denom = bid_sz + ask_sz
+        imbalance = (delta / denom) if denom > 1e-12 else 0.0
+
+        return {
+            "spread": spread_ticks,
+            "price_move_ticks": move_ticks,
+            "velocity": velocity,
+            "delta": delta,
+            "imbalance": imbalance,
+            "spread_threshold": self._spread_threshold,
+            "move_threshold": self._move_threshold,
+            "velocity_threshold": self._velocity_threshold,
+            "delta_threshold": self._delta_threshold,
+            "imbalance_threshold": self._imbalance_threshold,
+        }
+
+    def evaluate_entry_signal(self, market_snapshot: dict[str, float]) -> str:
+        """
+        Single-layer momentum decision engine.
+        Input: pure snapshot of features. Output: LONG / SHORT / NONE.
+        No side effects.
+        """
+        spread = float(market_snapshot.get("spread", 0.0))
+        price_move_ticks = float(market_snapshot.get("price_move_ticks", 0.0))
+        velocity = float(market_snapshot.get("velocity", 0.0))
+        delta = float(market_snapshot.get("delta", 0.0))
+        imbalance = float(market_snapshot.get("imbalance", 0.0))
+
+        if spread > float(market_snapshot.get("spread_threshold", self._spread_threshold)):
+            return "NONE"
+        if abs(price_move_ticks) < float(market_snapshot.get("move_threshold", self._move_threshold)):
+            return "NONE"
+        if abs(velocity) < float(market_snapshot.get("velocity_threshold", self._velocity_threshold)):
+            return "NONE"
+        if abs(delta) < float(market_snapshot.get("delta_threshold", self._delta_threshold)):
+            return "NONE"
+        if abs(imbalance) < float(market_snapshot.get("imbalance_threshold", self._imbalance_threshold)):
+            return "NONE"
+        if price_move_ticks > 0.0:
+            return "LONG"
+        if price_move_ticks < 0.0:
+            return "SHORT"
+        return "NONE"
+
+    def _log_decision(self, *, snapshot: dict[str, float], decision: str) -> None:
+        self.logger.info(
+            "[MM][ENTRY_DECISION] symbol=%s decision=%s spread=%.2f move_ticks=%.2f vel=%.6f delta=%.2f imb=%.3f",
+            self.symbol,
+            decision,
+            float(snapshot.get("spread", 0.0)),
+            float(snapshot.get("price_move_ticks", 0.0)),
+            float(snapshot.get("velocity", 0.0)),
+            float(snapshot.get("delta", 0.0)),
+            float(snapshot.get("imbalance", 0.0)),
+        )
+
+    def _send_aggressive_entry(self, *, decision: str, data: MarketData, now_mono: float) -> None:
+        if self._one_position_only and abs(self._position_qty) > 1e-12:
+            return
+
+        side = "1" if decision == "LONG" else "2"
+        price = float(data.ask) if side == "1" else float(data.bid)
+
+        req = OrderRequest(
+            symbol=self.symbol,
+            side=side,
+            qty=self.lot_size,
+            account="",
+            price=price,
+            market=self.market,
+            lot_size=1,
+            bypass_risk=False,
+        )
+
+        cl_ord_id = self.gateway.send_order(req)
+        self._last_entry_place_monotonic = now_mono
+        self.logger.info("[MM][ENTRY_EXECUTE] symbol=%s side=%s qty=%s px=%.4f cl_ord_id=%s", self.symbol, side, self.lot_size, price, cl_ord_id)
+
+    def _maybe_fast_invalidate(self, *, data: MarketData, now_mono: float) -> None:
+        # First tick after entry: if mid moved against us by >= 1 tick -> exit immediately.
+        if self._entry_monotonic <= 0.0:
+            return
+        if self._immediate_ticks_seen >= 1:
+            return
+
+        mid = float(data.mid_price)
+        if self._entry_mid_price <= 0.0:
+            self._entry_mid_price = mid
+            self._immediate_ticks_seen = 1
+            return
+
+        adverse = 0.0
+        if self._position_qty > 0:
+            adverse = (self._entry_mid_price - mid) / self._tick_size
+        else:
+            adverse = (mid - self._entry_mid_price) / self._tick_size
+
+        self._immediate_ticks_seen = 1
+        if adverse >= 1.0:
+            self._force_exit(data=data, now_mono=now_mono, reason="fast_invalidation")
+
+    def _force_exit(self, *, data: MarketData, now_mono: float, reason: str) -> None:
+        qty = abs(self._position_qty)
+        if qty <= 1e-12:
+            return
+        side = "2" if self._position_qty > 0 else "1"
+        price = float(data.bid) if side == "2" else float(data.ask)
+
+        req = OrderRequest(
+            symbol=self.symbol,
+            side=side,
+            qty=qty,
+            account="",
+            price=price,
+            market=self.market,
+            lot_size=1,
+            bypass_risk=True,
+        )
+        cl_ord_id = self.gateway.send_order(req)
+        self._last_entry_place_monotonic = now_mono
+        self.logger.info(
+            "[MM][EXIT] symbol=%s reason=%s side=%s qty=%.4f px=%.4f cl_ord_id=%s",
+            self.symbol,
+            reason,
+            side,
+            qty,
+            price,
+            cl_ord_id,
+        )
+
+# from __future__ import annotations
 
 import logging
 import json
@@ -12,14 +591,14 @@ import time
 from threading import RLock
 from typing import Callable
 
-from adaptive_learning_targets import load_adaptive_learning_targets
-from economics_store import EconomicsStore
-from execution_gateway import ExecutionGateway
-from market_data.models import MarketData
-from order_models import MarketType, OrderRequest
-from position_manager import PositionManager
-from position_policy import PositionPolicyRuntime
-from structured_logging import log_event
+from fix_engine.adaptive_learning_targets import load_adaptive_learning_targets
+from fix_engine.economics_store import EconomicsStore
+from fix_engine.execution_gateway import ExecutionGateway
+from fix_engine.market_data.models import MarketData
+from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.position_manager import PositionManager
+from fix_engine.position_policy import PositionPolicyRuntime
+from fix_engine.structured_logging import log_event
 
 
 class BasicMarketMaker:
@@ -142,6 +721,7 @@ class BasicMarketMaker:
         momentum_exit_enabled: bool = True,
         ignore_duplicate_ticks_ms: int = 120,
         decision_min_mid_move_ticks: float = 0.5,
+        cooldown_ms: int = 1200,
         tray_price_every_sec: float = 3.0,
         take_profit_per_trade: float = 0.5,
         dynamic_profit_target_enabled: bool = True,
@@ -176,6 +756,12 @@ class BasicMarketMaker:
         )
         self._entry_forecast_profit_enabled = bool(entry_forecast_profit_enabled)
         self._entry_forecast_alignment_min = float(entry_forecast_alignment_min)
+        # Flat config (single-layer momentum decision engine)
+        self._spread_threshold = 1.0
+        self._move_threshold = 1.0
+        self._velocity_threshold = 0.0
+        self._delta_threshold = 0.0
+        self._imbalance_threshold = 0.2
 
         # Keep TP configurable to avoid premature profit fixation.
         self._take_profit_per_trade = max(0.0, float(take_profit_per_trade))
@@ -262,12 +848,13 @@ class BasicMarketMaker:
         # Legacy: momentum exits removed; keep arg for compatibility.
         self._momentum_exit_enabled = False
         self._ignore_duplicate_ticks_sec = max(0.0, float(ignore_duplicate_ticks_ms) / 1000.0)
-        self._decision_min_mid_move_ticks = max(0.0, float(decision_min_mid_move_ticks))
+        # Single-layer momentum engine: no decision batching/confirmations.
+        self._cooldown_sec = max(0.0, float(cooldown_ms) / 1000.0)
         self._last_tick_bid = 0.0
         self._last_tick_ask = 0.0
         self._last_tick_mid = 0.0
         self._last_tick_mono = 0.0
-        self._last_decision_mid = 0.0
+        # legacy decision-loop state removed
         self._tray_price_every_sec = max(0.0, float(tray_price_every_sec))
         self._last_tray_log_mono = 0.0
         self._dynamic_profit_target_enabled = bool(dynamic_profit_target_enabled)
@@ -316,11 +903,7 @@ class BasicMarketMaker:
         self._adverse_fill_rate_threshold = min(1.0, max(0.0, float(adverse_fill_rate_threshold)))
         self._defensive_quote_offset_ticks = max(0, int(defensive_quote_offset_ticks))
         self._last_defensive_mode = False
-        self._decision_confirmation_updates = max(1, int(decision_confirmation_updates))
-        self._min_decision_interval_sec = max(0.0, float(min_decision_interval_ms) / 1000.0)
-        self._decision_batch_ticks = max(1, int(decision_batch_ticks))
-        self._last_decision_monotonic = 0.0
-        self._pending_decision_batch = 0
+        # legacy confirmation/batching args ignored
         self._latest_data: MarketData | None = None
         self._latest_mid_price = 0.0
         self._latest_bid = 0.0
@@ -454,28 +1037,21 @@ class BasicMarketMaker:
                 )
         # Momentum-only trader (no quoting / no passive MM).
         self._strategy_mode = "MOMENTUM_ACTIVE"
-        self._pending_decision_batch += 1
-
-        if not self._should_run_decision():
-            return
 
         latest = self._latest_data
         if latest is None:
             return
-        if self._decision_min_mid_move_ticks > 0.0 and self._last_decision_mid > 0.0:
-            move_ticks = abs(float(latest.mid_price) - self._last_decision_mid) / self._tick_size
-            if move_ticks < self._decision_min_mid_move_ticks:
-                return
-        self._last_decision_monotonic = time.monotonic()
-        self._pending_decision_batch = 0
-        self._last_decision_mid = float(latest.mid_price)
 
-        self._mid_prices.append(float(latest.mid_price))
-        self._trend_mids.append(float(latest.mid_price))
+        # Exit first (fast invalidation / risk exits).
         if self._maybe_force_exit(latest):
             return
         if self._forced_exit_in_progress:
             return
+        # Simple cooldown (ms) between entry attempts.
+        if self._cooldown_sec > 0.0 and self._last_entry_place_monotonic > 0.0:
+            if (now_mono - self._last_entry_place_monotonic) < self._cooldown_sec:
+                return
+
         self._evaluate_and_execute_entry(latest=latest, now_mono=now_mono)
 
     def on_execution_report(self, state: dict[str, str]) -> None:
@@ -1040,200 +1616,49 @@ class BasicMarketMaker:
         elif side_label == "SELL":
             decision["entry_price"] = bp
 
-    def _active_trend_module(self, *, now_mono: float | None = None) -> tuple[str, str]:
-        """Return active directional module: LONG, SHORT or NONE."""
-        if self._weekly_trend_state == "DOWN":
-            return ("SHORT", "weekly_down")
-        if self._weekly_trend_state == "UP":
-            return ("LONG", "weekly_up")
-        if now_mono is None:
-            now_mono = time.monotonic()
-        w500 = self._effective_signal_window_ms(500)
-        w1000 = self._effective_signal_window_ms(1000)
-        mom500 = self._mid_delta_over_window(now_mono=now_mono, window_ms=w500)
-        mom1000 = self._mid_delta_over_window(now_mono=now_mono, window_ms=w1000)
-        if mom500 is None or mom1000 is None:
-            return ("NONE", "trend_window_not_ready")
-        move_min = max(0.5, self._trend_continuation_min_move_ticks) * self._tick_size
-        if mom500 <= -move_min and mom1000 <= -move_min:
-            return ("SHORT", "short_term_down_ticks")
-        if mom500 >= move_min and mom1000 >= move_min:
-            return ("LONG", "short_term_up_ticks")
-        # Fast long override: catch sharp upside shifts before 1000ms trend fully flips.
-        if self._long_impulse_override_ticks > 0.0:
-            strong_move = self._long_impulse_override_ticks * self._tick_size
-            w100 = self._effective_signal_window_ms(100)
-            mom100 = self._mid_delta_over_window(now_mono=now_mono, window_ms=w100) or 0.0
-            if mom500 >= strong_move and (mom100 >= 0.0 or mom1000 >= 0.0):
-                return ("LONG", "long_impulse_override")
-        return ("NONE", "trend_unclear")
-
-    def _apply_directional_module(self, *, decision: dict[str, object], now_mono: float | None = None) -> None:
-        # Reuse precomputed module from entry evaluation to avoid time-skew desync
-        # where trend is computed twice on different ticks and flips to NONE.
-        module = str(decision.get("active_module", "")).strip().upper()
-        module_reason = str(decision.get("active_module_reason", "")).strip()
-        if module not in {"LONG", "SHORT", "NONE"}:
-            module, module_reason = self._active_trend_module(now_mono=now_mono)
-            decision["active_module"] = module
-            decision["active_module_reason"] = module_reason
-        if str(decision.get("decision", "SKIP")) != "EXECUTE":
-            return
-        if module == "NONE":
-            decision["decision"] = "SKIP"
-            decision["reason"] = "trend_module_not_confirmed"
-            return
-        desired_side = "SELL" if module == "SHORT" else "BUY"
-        side = str(decision.get("side", "NONE")).strip().upper()
-        if side != desired_side:
-            decision["decision"] = "SKIP"
-            decision["reason"] = "trend_module_block_opposite_side"
-            decision["side"] = desired_side
-            return
-        decision["reason"] = "short_module_execute" if module == "SHORT" else "long_module_execute"
-        self._sync_aggressive_entry_price_for_side(decision)
+    # Trend/secondary modules removed (single-layer decision).
+    def evaluate_entry_signal(self, market_snapshot: dict[str, float]) -> str:
+        """
+        Single-layer momentum decision engine.
+        Input: pure snapshot of features. Output: LONG / SHORT / NONE.
+        No side effects.
+        """
+        spread = float(market_snapshot.get("spread", 0.0))
+        price_move_ticks = float(market_snapshot.get("price_move_ticks", 0.0))
+        velocity = float(market_snapshot.get("velocity", 0.0))
+        delta = float(market_snapshot.get("delta", 0.0))
+        imbalance = float(market_snapshot.get("imbalance", 0.0))
+        move_thr = float(market_snapshot.get("move_threshold", 0.0))
+        vel_thr = float(market_snapshot.get("velocity_threshold", 0.0))
+        delta_thr = float(market_snapshot.get("delta_threshold", 0.0))
+        imb_thr = float(market_snapshot.get("imbalance_threshold", 0.0))
+        if spread > float(self._spread_threshold):
+            return "NONE"
+        if abs(price_move_ticks) < move_thr:
+            return "NONE"
+        if abs(velocity) < vel_thr:
+            return "NONE"
+        if abs(delta) < delta_thr:
+            return "NONE"
+        if abs(imbalance) < imb_thr:
+            return "NONE"
+        return "LONG" if price_move_ticks > 0.0 else "SHORT"
 
     def _evaluate_and_execute_entry(self, *, latest: MarketData, now_mono: float) -> None:
-        decision = self._evaluate_entry_signal(latest=latest, now_mono=now_mono)
-        mom_only = self._strategy_mode == "VOLUME_FOLLOW"
-        if self._weekly_trend_enabled and not mom_only:
-            self._maybe_refresh_weekly_trend(now_mono=now_mono)
-            self._apply_weekly_trend_filter(decision)
-        strategy_wanted_execute = decision["decision"] == "EXECUTE"
-        if strategy_wanted_execute:
-            if mom_only:
-                self._sync_aggressive_entry_price_for_side(decision)
-            else:
-                self._apply_directional_module(decision=decision, now_mono=now_mono)
-        if not mom_only:
-            self._apply_five_min_volume_impulse_gate(decision=decision, now_mono=now_mono)
-            self._apply_volume_move_correlation_gate(decision=decision, now_mono=now_mono)
-
-        # Virtual-account risk halt + pre-trade forecast gating.
-        if decision["decision"] == "EXECUTE":
-            if abs(self._position_qty) <= 1e-9 and self._virtual_account_drawdown_hit(unrealized=0.0):
-                decision["decision"] = "SKIP"
-                decision["reason"] = "virtual_account_dd_limit_hit"
-                self.logger.warning(
-                    "[MM][ENTRY_BLOCKED] symbol=%s reason=virtual_account_dd_limit_hit dd_abs=%.4f dd_limit_abs=%.4f",
-                    self.symbol,
-                    self._virtual_drawdown_abs(unrealized=0.0),
-                    self._virtual_account_max_drawdown_abs,
-                )
-            elif self._entry_forecast_profit_enabled:
-                side_label = str(decision.get("side", "NONE")).strip().upper()
-                if side_label in {"BUY", "SELL"}:
-                    fc = self._forecast_dynamic_profit_target_for_side(
-                        latest=latest,
-                        now_mono=now_mono,
-                        side_label=side_label,
-                    )
-                    decision["forecast_dyn_tp"] = fc["dyn_tp"]
-                    decision["forecast_alignment"] = fc["alignment"]
-                    if fc["alignment"] < self._entry_forecast_alignment_min:
-                        decision["decision"] = "SKIP"
-                        decision["reason"] = "pretrade_forecast_alignment_below_min"
-                else:
-                    decision["decision"] = "SKIP"
-                    decision["reason"] = "pretrade_forecast_invalid_side"
-
-        if decision["decision"] == "EXECUTE" and not (
-            self._one_position_only and abs(self._position_qty) > 1e-9
-        ):
-            self._log_entry_decision(decision)
-        self._persist_entry_decision(decision)
-        if decision["decision"] != "EXECUTE":
-            return
-        # One-position mode: while a position is open, block same-direction adds and
-        # allow only confirmed reversals with anti-noise gates.
         if self._one_position_only and abs(self._position_qty) > 1e-9:
-            if not self._handle_open_position_signal(decision=decision, now_mono=now_mono):
-                self._log_entry_blocked_before_decision(
-                    decision=decision,
-                    cooldown_active=False,
-                    position_exists=True,
-                    min_interval_not_passed=False,
-                )
-                self._log_entry_decision(decision)
-                self._persist_entry_decision(decision)
             return
-        # Enforce temporal gates for aggressive entries to avoid clustered overtrading.
-        if self._last_fill_monotonic > 0.0 and self._trade_cooldown_sec > 0.0:
-            since_fill = now_mono - self._last_fill_monotonic
-            if since_fill < self._trade_cooldown_sec:
-                decision["decision"] = "SKIP"
-                decision["reason"] = "trade_cooldown_active"
-                self._log_entry_blocked_before_decision(
-                    decision=decision,
-                    cooldown_active=True,
-                    position_exists=abs(self._position_qty) > 1e-9,
-                    min_interval_not_passed=False,
-                )
-                self._log_entry_decision(decision)
-                self._persist_entry_decision(decision)
-                return
-        if self._last_entry_place_monotonic > 0.0 and self._entry_min_place_interval_sec > 0.0:
-            since_place = now_mono - self._last_entry_place_monotonic
-            if since_place < self._entry_min_place_interval_sec:
-                decision["decision"] = "SKIP"
-                decision["reason"] = "entry_min_place_interval_active"
-                self._log_entry_blocked_before_decision(
-                    decision=decision,
-                    cooldown_active=False,
-                    position_exists=abs(self._position_qty) > 1e-9,
-                    min_interval_not_passed=True,
-                )
-                self._log_entry_decision(decision)
-                self._persist_entry_decision(decision)
-                return
-        side = str(decision["side"])
+        decision = self._evaluate_entry_signal(latest=latest, now_mono=now_mono)
+        self._log_entry_decision(decision)
+        self._persist_entry_decision(decision)
+        if str(decision.get("decision", "SKIP")) != "EXECUTE":
+            return
+        # Inventory gate only (no confirmations / multi-layer logic).
+        side = str(decision.get("side", "NONE"))
         if side == "BUY" and not self.position_manager.can_place_buy(self.symbol, self.lot_size):
-            decision["decision"] = "SKIP"
-            decision["reason"] = "inventory_block_buy"
-            self._log_entry_blocked_before_decision(
-                decision=decision,
-                cooldown_active=False,
-                position_exists=abs(self._position_qty) > 1e-9,
-                min_interval_not_passed=False,
-            )
-            self._log_entry_decision(decision)
-            self._persist_entry_decision(decision)
             return
         if side == "SELL" and not self.position_manager.can_place_sell(self.symbol, self.lot_size):
-            decision["decision"] = "SKIP"
-            decision["reason"] = "inventory_block_sell"
-            self._log_entry_blocked_before_decision(
-                decision=decision,
-                cooldown_active=False,
-                position_exists=abs(self._position_qty) > 1e-9,
-                min_interval_not_passed=False,
-            )
-            self._log_entry_decision(decision)
-            self._persist_entry_decision(decision)
             return
-        qty_multiplier = float(decision.get("qty_multiplier", 1.0) or 1.0)
-        qty_override: float | None = None
-        if qty_multiplier < 1.0:
-            qty_override = max(0.0, self.lot_size * max(0.0, min(1.0, qty_multiplier)))
-        self._send_aggressive_entry(decision=decision, qty_override=qty_override)
-
-    def _log_entry_blocked_before_decision(
-        self,
-        *,
-        decision: dict[str, object],
-        cooldown_active: bool,
-        position_exists: bool,
-        min_interval_not_passed: bool,
-    ) -> None:
-        self.logger.info(
-            "[MM][ENTRY_BLOCKED_BEFORE_DECISION] symbol=%s side=%s reason=%s cooldown_active=%s position_exists=%s min_interval_not_passed=%s",
-            self.symbol,
-            str(decision.get("side", "NONE")),
-            str(decision.get("reason", "")),
-            bool(cooldown_active),
-            bool(position_exists),
-            bool(min_interval_not_passed),
-        )
+        self._send_aggressive_entry(decision=decision)
 
     def _maybe_refresh_weekly_trend(self, *, now_mono: float) -> None:
         if not self._weekly_trend_db_path:
@@ -1829,6 +2254,20 @@ class BasicMarketMaker:
         momentum_100ms = self._mid_delta_over_window(now_mono=now_mono, window_ms=w100)
         momentum_50ms = self._mid_delta_over_window(now_mono=now_mono, window_ms=w50)
 
+        # Single-layer decision: compute features once, then pure decision.
+        snapshot = {
+            "spread": float(spread),
+            "price_move_ticks": float(price_move_ticks),
+            "velocity": float(velocity_ticks_per_ms),
+            "delta": float(delta),
+            "imbalance": float(imbalance),
+            "move_threshold": float(dynamic_move_threshold),
+            "velocity_threshold": float(dynamic_velocity_threshold),
+            "delta_threshold": float(delta_threshold),
+            "imbalance_threshold": float(0.2),
+        }
+        signal = self.evaluate_entry_signal(snapshot)
+
         decision: dict[str, object] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": self.symbol,
@@ -1836,116 +2275,31 @@ class BasicMarketMaker:
             "entry_type": "aggressive",
             "bid_price": float(latest.bid),
             "ask_price": float(latest.ask),
-            "momentum_100ms": float(momentum_100ms) if momentum_100ms is not None else 0.0,
-            "momentum_50ms": float(momentum_50ms) if momentum_50ms is not None else 0.0,
             "spread": spread,
-            "bid_size": bid_size,
-            "ask_size": ask_size,
             "imbalance": float(imbalance),
-            "total_volume": float(max(0.0, tot)),
-            "avg_volume": float(avg_volume),
             "delta": float(delta),
             "normalized_delta": float(normalized_delta),
-            "delta_threshold": float(delta_threshold),
             "price_move_ticks": float(price_move_ticks),
             "time_window_ms": float(time_window_ms),
             "velocity": float(velocity_ticks_per_ms),
             "avg_move_ticks": float(avg_move_ticks),
             "dynamic_move_threshold": float(dynamic_move_threshold),
             "dynamic_velocity_threshold": float(dynamic_velocity_threshold),
-            "ticks_since_move_start": int(ticks_since_move_start),
             "microprice": float(microprice),
             "mid_price": float(mid_price),
             "entry_price": 0.0,
             "decision": "SKIP",
-            "reason": "no_trade",
+            "reason": "",
             "strategy_mode": "MOMENTUM_ACTIVE",
         }
-
-        # -------------------------
-        # HARD ENTRY FILTERS
-        # -------------------------
-        if spread > 1.0:
-            decision["reason"] = "spread_gt_1"
-            self._log_entry_decision(decision)
-            return decision
-        # 1) Adaptive move/velocity filters (spread stays strict).
-        if abs(price_move_ticks) < dynamic_move_threshold:
-            decision["reason"] = "price_move_below_dynamic_threshold"
-            self._log_entry_decision(decision)
-            return decision
-        if abs(velocity_ticks_per_ms) < dynamic_velocity_threshold:
-            decision["reason"] = "velocity_below_dynamic_threshold"
-            self._log_entry_decision(decision)
-            return decision
-        # 3) Normalized delta filter (flow vs visible liquidity)
-        if abs(float(normalized_delta)) < 0.1:
-            decision["reason"] = "normalized_delta_lt_0p1"
-            self._log_entry_decision(decision)
-            return decision
-
-        if abs(delta) < delta_threshold:
-            decision["reason"] = "delta_below_threshold"
-            self._log_entry_decision(decision)
-            return decision
-        if abs(float(imbalance)) < 0.2:
-            decision["reason"] = "imbalance_lt_0p2"
-            self._log_entry_decision(decision)
-            return decision
-
-        # 4) Prevent late entries
-        if int(ticks_since_move_start) > 3:
-            decision["reason"] = "late_entry_move_streak_gt_3"
-            self._log_entry_decision(decision)
-            return decision
-
-        # -------------------------
-        # MOMENTUM ENTRY SIGNAL
-        # -------------------------
-        long_signal = price_move_ticks >= 2.0 and delta > delta_threshold and normalized_delta > 0.1 and imbalance > 0.2
-        short_signal = price_move_ticks <= -2.0 and delta < -delta_threshold and normalized_delta < -0.1 and imbalance < -0.2
-
-        # -------------------------
-        # EXECUTION: aggressive only
-        # -------------------------
-        impulse_gate = 1.5 * float(self._tick_size)
-        if long_signal:
-            # 5) Microprice confirmation
-            if float(microprice) <= float(mid_price):
-                decision["side"] = "BUY"
-                decision["reason"] = "microprice_not_confirming_long"
-                self._log_entry_decision(decision)
-                return decision
-            # short-term adverse filter
-            if (momentum_50ms or 0.0) < -impulse_gate:
-                decision["side"] = "BUY"
-                decision["reason"] = "short_impulse_against_long"
-                self._log_entry_decision(decision)
-                return decision
+        if signal == "LONG":
             decision["side"] = "BUY"
             decision["decision"] = "EXECUTE"
-            decision["reason"] = "mom_long"
             self._sync_aggressive_entry_price_for_side(decision)
-            return decision
-        if short_signal:
-            if float(microprice) >= float(mid_price):
-                decision["side"] = "SELL"
-                decision["reason"] = "microprice_not_confirming_short"
-                self._log_entry_decision(decision)
-                return decision
-            if (momentum_50ms or 0.0) > impulse_gate:
-                decision["side"] = "SELL"
-                decision["reason"] = "short_impulse_against_short"
-                self._log_entry_decision(decision)
-                return decision
+        elif signal == "SHORT":
             decision["side"] = "SELL"
             decision["decision"] = "EXECUTE"
-            decision["reason"] = "mom_short"
             self._sync_aggressive_entry_price_for_side(decision)
-            return decision
-
-        decision["reason"] = "direction_not_confirmed"
-        self._log_entry_decision(decision)
         return decision
 
     def _log_short_term_adverse_filter(self, *, signal: str, skipped: bool) -> None:
@@ -2149,22 +2503,14 @@ class BasicMarketMaker:
 
     def _log_entry_decision(self, decision: dict[str, object]) -> None:
         self.logger.info(
-            "[MM][ENTRY_DECISION] symbol=%s side=%s decision=%s reason=%s spread=%.2f move_ticks=%.2f vel=%.6f avg_move=%.2f dyn_move=%.2f dyn_vel=%.6f delta=%.2f ndelta=%.3f imb=%.3f micro=%.4f mid=%.4f",
+            "[MM][ENTRY_DECISION] symbol=%s decision=%s spread=%.2f move_ticks=%.2f vel=%.6f delta=%.2f imb=%.3f",
             self.symbol,
-            str(decision.get("side", "NONE")),
             str(decision.get("decision", "SKIP")),
-            str(decision.get("reason", "")),
             float(decision.get("spread", 0.0)),
             float(decision.get("price_move_ticks", 0.0)),
             float(decision.get("velocity", 0.0)),
-            float(decision.get("avg_move_ticks", 0.0)),
-            float(decision.get("dynamic_move_threshold", 0.0)),
-            float(decision.get("dynamic_velocity_threshold", 0.0)),
             float(decision.get("delta", 0.0)),
-            float(decision.get("normalized_delta", 0.0)),
             float(decision.get("imbalance", 0.0)),
-            float(decision.get("microprice", 0.0)),
-            float(decision.get("mid_price", 0.0)),
         )
 
     def _persist_entry_decision(self, decision: dict[str, object]) -> None:
@@ -2201,9 +2547,10 @@ class BasicMarketMaker:
         except Exception as exc:
             self.logger.warning("[MM][ENTRY_DECISION][DB_FAIL] symbol=%s err=%s", self.symbol, exc)
 
-    def _should_run_decision(self) -> bool:
-        if self._pending_decision_batch < self._decision_batch_ticks:
-            return False
-        if self._last_decision_monotonic <= 0:
-            return True
-        return (time.monotonic() - self._last_decision_monotonic) >= self._min_decision_interval_sec
+    # Decision batching/confirmation removed (single-snapshot decision).
+
+
+# Ensure the momentum-only implementation is exported even if legacy code
+# gets appended/loaded below during iterative refactors.
+BasicMarketMaker = _MomentumBasicMarketMaker
+
