@@ -4,7 +4,6 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from fix_engine.md_health_monitor import MdHealthMonitor
 from fix_engine.market_data.market_data_engine import MarketDataEngine
@@ -14,29 +13,37 @@ from fix_engine.structured_logging import StructuredLoggingRuntime, log_event
 def run_tbank_paper_session(
     *,
     base_dir: Path,
-    cfg_for_optional: Path,
     execution_mode: str,
     gateway: object,
     market_data_engine: MarketDataEngine,
     logger: logging.Logger,
     failure_monitor: object | None,
     logging_runtime: StructuredLoggingRuntime,
-    read_str: Callable[[Path, str, str], str],
-    read_int: Callable[[Path, str, int], int],
-    read_float: Callable[[Path, str, float], float],
-    read_bool: Callable[[Path, str, bool], bool],
+    tbank_broker: object | None = None,
+    swing_runner: object | None = None,
 ) -> None:
+    from fix_engine.config.settings import (
+        read_bool_merged,
+        read_float_merged,
+        read_int_merged,
+        read_str_merged,
+    )
     from fix_engine.tbank_preflight import load_sandbox_token, verify_market_data_readonly
     from fix_engine.tbank_sandbox_feed import run_tbank_sandbox_market_data
+    from fix_engine.tools.common_cfg_dir import TBANK_INVEST_GRPC_HOST_PROD
     from fix_engine.tools.export_session_metrics import print_post_run_summary
 
     md_health: MdHealthMonitor | None = None
-    if execution_mode != "PAPER_REAL_MARKET":
-        raise RuntimeError(f"Sandbox paper session requires ExecutionMode=PAPER_REAL_MARKET, got {execution_mode!r}")
+    if execution_mode not in {"PAPER_REAL_MARKET", "LIVE"}:
+        raise RuntimeError(
+            f"Tinkoff market-data session requires ExecutionMode=PAPER_REAL_MARKET or LIVE, got {execution_mode!r}"
+        )
 
     uses_local_sim_execution = bool(getattr(gateway, "_uses_local_sim_execution", False))
-    if not uses_local_sim_execution:
-        raise RuntimeError("FATAL: gateway must use local synthetic execution for paper sandbox run")
+    if execution_mode == "PAPER_REAL_MARKET" and not uses_local_sim_execution:
+        raise RuntimeError("FATAL: PAPER_REAL_MARKET requires local synthetic execution (paper fills)")
+    if execution_mode == "LIVE" and uses_local_sim_execution:
+        raise RuntimeError("FATAL: LIVE requires broker execution (set ExecutionMode=LIVE and wire Tinkoff engines)")
 
     log_event(
         logger,
@@ -45,25 +52,19 @@ def run_tbank_paper_session(
         event="paper_execution_guard",
         execution_mode=str(getattr(gateway, "execution_mode", execution_mode)),
         uses_local_sim_execution=uses_local_sim_execution,
+        broker_orders=execution_mode == "LIVE",
     )
 
-    tbank_host = read_str(cfg_for_optional, "TBankSandboxHost", "invest-public-api.tinkoff.ru:443")
-    tbank_token = os.getenv("TINKOFF_TOKEN", "").strip() or os.getenv("TINKOFF_SANDBOX_TOKEN", "").strip()
-    if not tbank_token:
-        local_secrets = base_dir / "settings.local.cfg"
-        if local_secrets.exists():
-            tbank_token = read_str(local_secrets, "TBankSandboxToken", "").strip()
-    if not tbank_token:
-        tbank_token = read_str(cfg_for_optional, "TBankSandboxToken", "").strip()
+    tbank_host = read_str_merged(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
 
-    tbank_instrument_id = read_str(cfg_for_optional, "TBankInstrumentId", "")
-    tbank_symbol = read_str(cfg_for_optional, "TBankSymbol", "SBER")
-    tbank_depth = read_int(cfg_for_optional, "TBankOrderBookDepth", 1)
-    tbank_include_trades = read_bool(cfg_for_optional, "TBankIncludeTrades", True)
-    tbank_run_duration_sec = read_int(cfg_for_optional, "TBankRunDurationSec", 0)
-    tbank_md_reconnect_initial_sec = read_float(cfg_for_optional, "TBankMdReconnectInitialSec", 1.0)
-    tbank_md_reconnect_max_sec = read_float(cfg_for_optional, "TBankMdReconnectMaxSec", 60.0)
-    tbank_md_stale_reconnect_sec = read_float(cfg_for_optional, "TBankMdStaleReconnectSec", 90.0)
+    tbank_instrument_id = read_str_merged(base_dir, "TBankInstrumentId", "")
+    tbank_symbol = read_str_merged(base_dir, "TBankSymbol", "SBER")
+    tbank_depth = read_int_merged(base_dir, "TBankOrderBookDepth", 1)
+    tbank_include_trades = read_bool_merged(base_dir, "TBankIncludeTrades", True)
+    tbank_run_duration_sec = read_int_merged(base_dir, "TBankRunDurationSec", 0)
+    tbank_md_reconnect_initial_sec = read_float_merged(base_dir, "TBankMdReconnectInitialSec", 1.0)
+    tbank_md_reconnect_max_sec = read_float_merged(base_dir, "TBankMdReconnectMaxSec", 60.0)
+    tbank_md_stale_reconnect_sec = read_float_merged(base_dir, "TBankMdStaleReconnectSec", 90.0)
 
     env_dur = os.getenv("TBANK_RUN_DURATION_SEC", "").strip()
     if env_dur:
@@ -76,12 +77,14 @@ def run_tbank_paper_session(
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
 
-    tok = load_sandbox_token(base_dir, read_str)
-    if not tok.strip():
-        raise RuntimeError("PREFLIGHT: T-Invest token not loaded (TINKOFF_TOKEN / settings.local.cfg TBankSandboxToken)")
+    tbank_token = load_sandbox_token(base_dir)
+    if not tbank_token.strip():
+        raise RuntimeError(
+            "PREFLIGHT: T-Invest token not loaded (settings.local.cfg: TBankSandboxToken=...)"
+        )
 
     verify_market_data_readonly(
-        token=tok,
+        token=tbank_token,
         host=tbank_host,
         instrument_id=tbank_instrument_id,
         logger=logger,
@@ -91,7 +94,10 @@ def run_tbank_paper_session(
         level=logging.INFO,
         component="Preflight",
         event="stream_ready",
-        detail="Tinkoff market-data unary OK; starting MarketDataStream (orders disabled)",
+        detail=(
+            "Tinkoff market-data unary OK; starting MarketDataStream"
+            + ("; LIVE broker orders enabled" if execution_mode == "LIVE" else "; paper fills local")
+        ),
     )
 
     md_health = MdHealthMonitor(
@@ -100,6 +106,10 @@ def run_tbank_paper_session(
         interval_sec=5.0,
     )
     md_health.start()
+    if tbank_broker is not None:
+        start_stream = getattr(tbank_broker, "start_order_stream", None)
+        if callable(start_stream):
+            start_stream()
     if failure_monitor is not None:
         start = getattr(failure_monitor, "start", None)
         if callable(start):
@@ -131,6 +141,14 @@ def run_tbank_paper_session(
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
+        if swing_runner is not None:
+            stop_swing = getattr(swing_runner, "stop", None)
+            if callable(stop_swing):
+                stop_swing()
+        if tbank_broker is not None:
+            stop_stream = getattr(tbank_broker, "stop_order_stream", None)
+            if callable(stop_stream):
+                stop_stream()
         if md_health is not None:
             md_health.stop()
         if failure_monitor is not None:

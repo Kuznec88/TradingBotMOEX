@@ -8,20 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
-def _read_cfg_value(cfg_dir: Path, key: str, default: str = "") -> str:
-    for name in ("settings.local.cfg", "settings.runtime.cfg", "settings.cfg"):
-        path = cfg_dir / name
-        if not path.exists():
-            continue
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == key:
-                return v.strip()
-    return default
+from fix_engine.tools.common_cfg_dir import read_cfg_value_from_dir
 
 
 _TRAY_RE = re.compile(r"\[MM\]\[TRAY\]\s+symbol=(?P<symbol>[A-Z0-9_]+).*?\bmid=(?P<mid>-?\d+(?:\.\d+)?)")
@@ -107,7 +94,7 @@ def main() -> None:
     args = ap.parse_args()
 
     fix_engine_dir = Path(__file__).resolve().parents[1]
-    symbol = (args.symbol or _read_cfg_value(fix_engine_dir, "MarketMakingSymbol", "")).strip().upper()
+    symbol = (args.symbol or read_cfg_value_from_dir(fix_engine_dir, "MarketMakingSymbol", "")).strip().upper()
     if not symbol:
         print("symbol is empty; pass --symbol", file=sys.stderr)
         raise SystemExit(1)
@@ -180,8 +167,8 @@ def main() -> None:
     if abs(pos) > 1e-9 and avg > 0.0 and last_tray_mid is not None:
         upnl = (last_tray_mid - avg) * pos
 
-    start_balance = float(_read_cfg_value(fix_engine_dir, "VirtualAccountStartBalance", "0.0") or "0.0")
-    max_loss_frac = float(_read_cfg_value(fix_engine_dir, "VirtualAccountMaxLossFraction", "0.0") or "0.0")
+    start_balance = float(read_cfg_value_from_dir(fix_engine_dir, "VirtualAccountStartBalance", "0.0") or "0.0")
+    max_loss_frac = float(read_cfg_value_from_dir(fix_engine_dir, "VirtualAccountMaxLossFraction", "0.0") or "0.0")
     realized_all = float(analytics[0]) if analytics else 0.0
     virtual_equity = start_balance + realized_all + upnl
     dd_abs = max(0.0, start_balance - virtual_equity) if start_balance > 0.0 else 0.0

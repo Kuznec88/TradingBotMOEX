@@ -290,6 +290,13 @@ class EconomicsStore:
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
+    def _executemany_locked(self, sql: str, params: list[tuple]) -> None:
+        if not params:
+            return
+        with self._lock, sqlite3.connect(self._db_path) as conn:
+            conn.executemany(sql, params)
+            conn.commit()
+
     def insert_trade(self, record: dict[str, str]) -> None:
         with self._lock, sqlite3.connect(self._db_path) as conn:
             net_pnl = float(record["net_pnl"])
@@ -351,77 +358,71 @@ class EconomicsStore:
     def insert_trade_analytics(self, rows: list[dict[str, str]]) -> None:
         if not rows:
             return
-        with self._lock, sqlite3.connect(self._db_path) as conn:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO trade_analytics(
-                    trade_id, order_id, symbol, side, gross_pnl, net_pnl, fees, slippage, spread_pnl, adverse_pnl,
-                    holding_pnl, expected_price, actual_price, hour_bucket, volatility_regime, spread_bucket,
-                    adverse_fill, time_in_book_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row["trade_id"],
-                        row["order_id"],
-                        row["symbol"],
-                        row["side"],
-                        float(row["gross_pnl"]),
-                        float(row["net_pnl"]),
-                        float(row["fees"]),
-                        float(row["slippage"]),
-                        float(row["spread_pnl"]),
-                        float(row["adverse_pnl"]),
-                        float(row["holding_pnl"]),
-                        float(row["expected_price"]),
-                        float(row["actual_price"]),
-                        int(row.get("hour_bucket", "0")),
-                        row.get("volatility_regime", "unknown"),
-                        row.get("spread_bucket", "unknown"),
-                        1 if row.get("is_adverse_fill", "0") == "1" else 0,
-                        float(row.get("time_in_book_ms", "0")),
-                        row["created_at"],
-                    )
-                    for row in rows
-                ],
+        sql = """
+        INSERT OR REPLACE INTO trade_analytics(
+            trade_id, order_id, symbol, side, gross_pnl, net_pnl, fees, slippage, spread_pnl, adverse_pnl,
+            holding_pnl, expected_price, actual_price, hour_bucket, volatility_regime, spread_bucket,
+            adverse_fill, time_in_book_ms, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = [
+            (
+                row["trade_id"],
+                row["order_id"],
+                row["symbol"],
+                row["side"],
+                float(row["gross_pnl"]),
+                float(row["net_pnl"]),
+                float(row["fees"]),
+                float(row["slippage"]),
+                float(row["spread_pnl"]),
+                float(row["adverse_pnl"]),
+                float(row["holding_pnl"]),
+                float(row["expected_price"]),
+                float(row["actual_price"]),
+                int(row.get("hour_bucket", "0")),
+                row.get("volatility_regime", "unknown"),
+                row.get("spread_bucket", "unknown"),
+                1 if row.get("is_adverse_fill", "0") == "1" else 0,
+                float(row.get("time_in_book_ms", "0")),
+                row["created_at"],
             )
-            conn.commit()
+            for row in rows
+        ]
+        self._executemany_locked(sql=sql, params=params)
 
     def insert_round_trips(self, rows: list[dict[str, str | float]]) -> None:
         if not rows:
             return
-        with self._lock, sqlite3.connect(self._db_path) as conn:
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO round_trip_analytics(
-                    round_trip_id, entry_trade_id, exit_trade_id, symbol, side, duration_ms, total_pnl, mae, mfe,
-                    immediate_move, entry_price, exit_price, entry_spread, entry_volatility_regime, entry_time_in_book_ms, entry_ts, exit_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row["round_trip_id"],
-                        row["entry_trade_id"],
-                        row["exit_trade_id"],
-                        row["symbol"],
-                        row["side"],
-                        float(row["duration_ms"]),
-                        float(row["total_pnl"]),
-                        float(row["mae"]),
-                        float(row["mfe"]),
-                        float(row.get("immediate_move", 0.0)),
-                        float(row.get("entry_price", 0.0)),
-                        float(row.get("exit_price", 0.0)),
-                        float(row.get("entry_spread", 0.0)),
-                        str(row.get("entry_volatility_regime", "unknown")),
-                        float(row.get("entry_time_in_book_ms", 0.0)),
-                        row["entry_ts"],
-                        row["exit_ts"],
-                    )
-                    for row in rows
-                ],
+        sql = """
+        INSERT OR REPLACE INTO round_trip_analytics(
+            round_trip_id, entry_trade_id, exit_trade_id, symbol, side, duration_ms, total_pnl, mae, mfe,
+            immediate_move, entry_price, exit_price, entry_spread, entry_volatility_regime, entry_time_in_book_ms, entry_ts, exit_ts
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        params = [
+            (
+                row["round_trip_id"],
+                row["entry_trade_id"],
+                row["exit_trade_id"],
+                row["symbol"],
+                row["side"],
+                float(row["duration_ms"]),
+                float(row["total_pnl"]),
+                float(row["mae"]),
+                float(row["mfe"]),
+                float(row.get("immediate_move", 0.0)),
+                float(row.get("entry_price", 0.0)),
+                float(row.get("exit_price", 0.0)),
+                float(row.get("entry_spread", 0.0)),
+                str(row.get("entry_volatility_regime", "unknown")),
+                float(row.get("entry_time_in_book_ms", 0.0)),
+                row["entry_ts"],
+                row["exit_ts"],
             )
-            conn.commit()
+            for row in rows
+        ]
+        self._executemany_locked(sql=sql, params=params)
 
     def update_adverse_selection(
         self,

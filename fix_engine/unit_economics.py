@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 from fix_engine.order_models import MarketType
+
+if TYPE_CHECKING:
+    from fix_engine.broker_fee_model import BrokerFeeCalculator
 
 getcontext().prec = 28
 QTY_Q = Decimal("0.0001")
@@ -47,9 +50,12 @@ class UnitEconomicsCalculator:
         self,
         fee_bps_by_market: Dict[MarketType, Decimal],
         fixed_fee_by_market: Dict[MarketType, Decimal] | None = None,
+        *,
+        broker_fee_calculator: BrokerFeeCalculator | None = None,
     ) -> None:
         self._fee_bps_by_market = fee_bps_by_market
         self._fixed_fee_by_market = fixed_fee_by_market or {}
+        self._broker_fee_calculator = broker_fee_calculator
         self._positions: Dict[tuple[MarketType, str], _PositionState] = {}
         self._round_trip_seq = 0
 
@@ -96,12 +102,17 @@ class UnitEconomicsCalculator:
         ask_px = (ask or price).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
         mid_px = (mid_price or ((bid_px + ask_px) / Decimal("2"))).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
 
-        # Fees: per-trade notional * bps (market-specific).
+        # Fees: либо BrokerFeeCalculator (тариф Т-Банк: bps акции / ступени FORTS), либо legacy bps.
         notional = (qty * price).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
-        fee_bps = self._fee_bps_by_market.get(market, Decimal("0"))
-        proportional_fees = (notional * fee_bps / Decimal("10000")).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
-        fixed_fee = self._fixed_fee_by_market.get(market, Decimal("0")).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
-        fees = (proportional_fees + fixed_fee).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+        if self._broker_fee_calculator is not None:
+            fees = self._broker_fee_calculator.fee_for_fill(market, notional, fill_ts).quantize(
+                MONEY_Q, rounding=ROUND_HALF_UP
+            )
+        else:
+            fee_bps = self._fee_bps_by_market.get(market, Decimal("0"))
+            proportional_fees = (notional * fee_bps / Decimal("10000")).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+            fixed_fee = self._fixed_fee_by_market.get(market, Decimal("0")).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
+            fees = (proportional_fees + fixed_fee).quantize(MONEY_Q, rounding=ROUND_HALF_UP)
 
         gross = Decimal("0.00")
         spread_pnl = Decimal("0.00")

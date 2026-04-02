@@ -7,24 +7,14 @@ read-only токен только на котировки даёт UNAUTHENTICAT
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-
-def _read_cfg_value(cfg_dir: Path, key: str, default: str = "") -> str:
-    for name in ("settings.local.cfg", "settings.runtime.cfg", "settings.cfg"):
-        path = cfg_dir / name
-        if not path.exists():
-            continue
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == key:
-                return v.strip()
-    return default
+from fix_engine.tools.common_cfg_dir import (
+    TBANK_INVEST_GRPC_HOST_PROD,
+    read_cfg_value_from_dir,
+    read_tinvest_token_from_dir,
+)
 
 
 def _money(x: object | None) -> float | None:
@@ -40,19 +30,16 @@ def main() -> None:
     if str(fix_engine_dir) not in sys.path:
         sys.path.insert(0, str(fix_engine_dir.parent))
 
-    token = (
-        os.environ.get("TINKOFF_TOKEN", "").strip()
-        or os.environ.get("TINKOFF_SANDBOX_TOKEN", "").strip()
-        or _read_cfg_value(fix_engine_dir, "TBankSandboxToken")
-    )
+    token = read_tinvest_token_from_dir(fix_engine_dir)
     if not token:
-        print("Задайте TINKOFF_TOKEN или TBankSandboxToken в settings.local.cfg", file=sys.stderr)
+        print("Задайте TBankSandboxToken в settings.local.cfg.", file=sys.stderr)
         sys.exit(1)
 
-    host = _read_cfg_value(fix_engine_dir, "TBankSandboxHost", "invest-public-api.tinkoff.ru:443")
+    host = read_cfg_value_from_dir(fix_engine_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
 
     from t_tech.invest import Client
     from t_tech.invest.exceptions import UnauthenticatedError
+    from t_tech.invest.exceptions import RequestError
 
     try:
         with Client(token, target=host) as client:
@@ -71,9 +58,13 @@ def main() -> None:
                     f"bonds={_money(getattr(port, 'total_amount_bonds', None))} "
                     f"etf={_money(getattr(port, 'total_amount_etf', None))}"
                 )
-                w = client.operations.get_withdraw_limits(account_id=aid)
-                for m in getattr(w, "money", []) or []:
-                    print(f"  withdraw_limit {getattr(m, 'currency', '')}: {_money(getattr(m, 'amount', None))}")
+                try:
+                    w = client.operations.get_withdraw_limits(account_id=aid)
+                    for m in getattr(w, "money", []) or []:
+                        print(f"  withdraw_limit {getattr(m, 'currency', '')}: {_money(getattr(m, 'amount', None))}")
+                except RequestError as exc:
+                    # Например, INVEST_BOX может быть "blocked" для withdraw limits → 30082.
+                    print(f"  withdraw_limits_error: {exc}", file=sys.stderr)
     except UnauthenticatedError as exc:
         print(
             "UNAUTHENTICATED: для счетов/портфеля нужен полный токен T-Invest, "

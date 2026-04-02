@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 env/
+fix_engine/.venv/
 
 # Environment variables
 .env
@@ -15,6 +16,11 @@ env/
 *.log
 *.tmp
 *.bak
+# SQLite journal (не коммитить)
+*.db-shm
+*.db-wal
+# single-instance lock (создаётся при старте раннера)
+fix_engine/log/fix_engine_runtime.lock
 
 # T-Invest sandbox token (optional override; prefer env TINKOFF_SANDBOX_TOKEN)
 fix_engine/settings.local.cfg

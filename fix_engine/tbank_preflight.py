@@ -3,22 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from pathlib import Path
 
 
-def load_sandbox_token(base_dir: Path, cfg_read_str: Callable[[Path, str, str], str]) -> str:
-    import os
+def load_sandbox_token(base_dir: Path) -> str:
+    from fix_engine.tools.common_cfg_dir import read_tinvest_token_from_dir
 
-    tok = os.getenv("TINKOFF_TOKEN", "").strip() or os.getenv("TINKOFF_SANDBOX_TOKEN", "").strip()
-    if tok:
-        return tok
-    local = base_dir / "settings.local.cfg"
-    if local.exists():
-        tok = cfg_read_str(local, "TBankSandboxToken", "").strip()
-    if not tok:
-        tok = cfg_read_str(base_dir / "settings.cfg", "TBankSandboxToken", "").strip()
-    return tok
+    return read_tinvest_token_from_dir(base_dir)
 
 
 def verify_market_data_readonly(
@@ -27,7 +18,7 @@ def verify_market_data_readonly(
     host: str,
     instrument_id: str,
     logger: logging.Logger,
-) -> None:
+) -> str:
     """Raises on failure. Uses only MarketDataService unary calls — no orders."""
     from t_tech.invest import Client
 
@@ -37,8 +28,9 @@ def verify_market_data_readonly(
     logger.info(
         "[PREFLIGHT] T-Invest token OK; get_last_prices + get_order_book succeeded (read-only).",
     )
+    return host
 
 
 def assert_no_orders_client_exposed() -> None:
-    """Documentary guard: order placement must not be used in paper pipeline."""
+    """Устарело: paper-сессия не шлёт ордера; LIVE использует fix_engine.execution.tbank_broker."""
     return

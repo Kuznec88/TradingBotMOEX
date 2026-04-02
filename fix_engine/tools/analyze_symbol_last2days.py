@@ -5,45 +5,10 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from fix_engine.tools.common_stats import avg, corr, med, quantile
+
 
 DB_PATH = Path(__file__).resolve().parents[1] / "trade_economics.db"
-
-
-def avg(values):
-    vv = [x for x in values if x is not None]
-    return (sum(vv) / len(vv)) if vv else None
-
-
-def med(values):
-    vv = [x for x in values if x is not None]
-    return statistics.median(vv) if vv else None
-
-
-def corr(xs, ys):
-    pts = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
-    if len(pts) < 2:
-        return None
-    xv = [p[0] for p in pts]
-    yv = [p[1] for p in pts]
-    mx = sum(xv) / len(xv)
-    my = sum(yv) / len(yv)
-    num = sum((a - mx) * (b - my) for a, b in pts)
-    denx = math.sqrt(sum((a - mx) ** 2 for a in xv))
-    deny = math.sqrt(sum((b - my) ** 2 for b in yv))
-    if denx == 0 or deny == 0:
-        return None
-    return num / (denx * deny)
-
-
-def quantile(sorted_values, p):
-    if not sorted_values:
-        return None
-    i = (len(sorted_values) - 1) * p
-    lo = math.floor(i)
-    hi = math.ceil(i)
-    if lo == hi:
-        return sorted_values[int(i)]
-    return sorted_values[lo] * (hi - i) + sorted_values[hi] * (i - lo)
 
 
 def summarize(group):

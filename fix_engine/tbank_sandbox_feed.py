@@ -105,7 +105,9 @@ def run_tbank_sandbox_market_data(
         ) from exc
 
     if not token.strip():
-        raise RuntimeError("TBank token is empty. Set TBankSandboxToken or TINKOFF_TOKEN / TINKOFF_SANDBOX_TOKEN.")
+        raise RuntimeError(
+            "TBank token is empty. Set TBankSandboxToken in settings.local.cfg."
+        )
     if not instrument_id.strip():
         raise RuntimeError("TBank instrument id/figi is empty. Set TBankInstrumentId in settings.")
 
@@ -254,18 +256,26 @@ def run_tbank_sandbox_market_data(
                             bid_size = bid_size_l1
                             ask_size = ask_size_l1
                         if bid > 0 and ask > 0:
-                            on_raw_market_data(
-                                {
-                                    "symbol": symbol.upper(),
-                                    "bid": bid,
-                                    "ask": ask,
-                                    "last": (bid + ask) / 2.0,
-                                    "volume": float(bid_size + ask_size),
-                                    "bid_size": bid_size,
-                                    "ask_size": ask_size,
-                                    "timestamp": _to_datetime(getattr(orderbook, "time", None)),
-                                }
-                            )
+                            try:
+                                on_raw_market_data(
+                                    {
+                                        "symbol": symbol.upper(),
+                                        "bid": bid,
+                                        "ask": ask,
+                                        "last": (bid + ask) / 2.0,
+                                        "volume": float(bid_size + ask_size),
+                                        "bid_size": bid_size,
+                                        "ask_size": ask_size,
+                                        "timestamp": _to_datetime(getattr(orderbook, "time", None)),
+                                    }
+                                )
+                            except Exception as exc:
+                                # Never let strategy/risk exceptions tear down the market-data stream.
+                                logger.warning(
+                                    "[TBANK][MD] on_raw_market_data error (ignored): %s",
+                                    exc,
+                                    exc_info=True,
+                                )
                             last_md_update_mono[0] = time.monotonic()
                         continue
 
@@ -273,18 +283,25 @@ def run_tbank_sandbox_market_data(
                     if last_price is not None:
                         px = _quotation_to_float(getattr(last_price, "price", None))
                         if px > 0:
-                            on_raw_market_data(
-                                {
-                                    "symbol": symbol.upper(),
-                                    "bid": px,
-                                    "ask": px,
-                                    "last": px,
-                                    "volume": 0.0,
-                                    "bid_size": 0.0,
-                                    "ask_size": 0.0,
-                                    "timestamp": _to_datetime(getattr(last_price, "time", None)),
-                                }
-                            )
+                            try:
+                                on_raw_market_data(
+                                    {
+                                        "symbol": symbol.upper(),
+                                        "bid": px,
+                                        "ask": px,
+                                        "last": px,
+                                        "volume": 0.0,
+                                        "bid_size": 0.0,
+                                        "ask_size": 0.0,
+                                        "timestamp": _to_datetime(getattr(last_price, "time", None)),
+                                    }
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "[TBANK][MD] on_raw_market_data error (ignored): %s",
+                                    exc,
+                                    exc_info=True,
+                                )
                             last_md_update_mono[0] = time.monotonic()
                 if need_reconnect_after_depth_fallback:
                     logger.warning(

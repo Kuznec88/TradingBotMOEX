@@ -17,25 +17,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
-def _read_cfg(cfg_dir: Path, key: str, default: str = "") -> str:
-    for name in ("settings.local.cfg", "settings.runtime.cfg", "settings.cfg"):
-        p = cfg_dir / name
-        if not p.exists():
-            continue
-        for raw in p.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == key:
-                return v.strip()
-    return default
+from fix_engine.tools.common_cfg_dir import (
+    TBANK_INVEST_GRPC_HOST_PROD,
+    read_cfg_value_from_dir,
+    read_tinvest_token_from_dir,
+)
 
 
 def _q_float(q: object | None) -> float:
@@ -62,17 +53,13 @@ def main() -> None:
     ap.add_argument("--out", type=str, default="", help="CSV или пусто = только сводка в stdout")
     args = ap.parse_args()
 
-    token = (
-        os.environ.get("TINKOFF_TOKEN", "").strip()
-        or os.environ.get("TINKOFF_SANDBOX_TOKEN", "").strip()
-        or _read_cfg(fix_engine_dir, "TBankSandboxToken")
-    )
+    token = read_tinvest_token_from_dir(fix_engine_dir)
     if not token:
-        print("Нет токена (TINKOFF_TOKEN / settings.local.cfg)", file=sys.stderr)
+        print("Нет токена: задайте TBankSandboxToken в settings.local.cfg", file=sys.stderr)
         sys.exit(1)
 
-    host = _read_cfg(fix_engine_dir, "TBankSandboxHost", "invest-public-api.tinkoff.ru:443")
-    iid = _read_cfg(fix_engine_dir, "TBankInstrumentId", "")
+    host = read_cfg_value_from_dir(fix_engine_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
+    iid = read_cfg_value_from_dir(fix_engine_dir, "TBankInstrumentId", "")
     if not iid:
         print("TBankInstrumentId пуст в settings", file=sys.stderr)
         sys.exit(1)

@@ -668,6 +668,13 @@ class ExecutionGateway:
         by_market = str(self.account_by_market.get(request.market, "")).strip()
         if by_market:
             return by_market
+        # LIVE safety: many brokers use a single trading account for both EQUITIES/FORTS.
+        # If FORTS account isn't configured, fall back to equities account to avoid hard-failing
+        # strategy execution with AccountMissing.
+        if request.market == MarketType.FORTS:
+            eq = str(self.account_by_market.get(MarketType.EQUITIES, "")).strip()
+            if eq:
+                return eq
         return ""
 
     @staticmethod
@@ -675,5 +682,7 @@ class ExecutionGateway:
         value = str(account).strip()
         if not value:
             return False
-        # Conservative FIX-safe account format for real mode.
-        return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._-]{1,31}", value) is not None
+        # T-Invest account id is UUID; also allow short FIX-style ids.
+        if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value):
+            return True
+        return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+._-]{1,63}", value) is not None

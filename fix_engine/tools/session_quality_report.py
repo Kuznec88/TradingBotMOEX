@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from fix_engine.tools.common_stats import avg, safe_div as _safe_div
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB = ROOT / "trade_economics.db"
@@ -12,13 +14,6 @@ SYMBOL = "SRM6"
 TERMINAL_LOG = Path(
     "C:/Users/Admin/.cursor/projects/c-Users-Admin-Python-Projects-TradingBotMOEX/terminals/591426.txt"
 )
-
-
-def avg(values):
-    vals = [v for v in values if v is not None]
-    return (sum(vals) / len(vals)) if vals else None
-
-
 def win_rate(rows):
     if not rows:
         return None
@@ -73,9 +68,7 @@ def spread_bucket(spread):
 
 
 def safe_div(a, b):
-    if a is None or b is None or b == 0:
-        return None
-    return a / b
+    return _safe_div(a, b)
 
 
 def main():
