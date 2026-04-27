@@ -1,0 +1,26 @@
+{
+  "ran": true,
+  "reason": "gate_failed_or_unreliable",
+  "weights_used": {
+    "combine_impulse": false,
+    "w_impulse": 0.22,
+    "w_impulse_strength": 0.2461544944321035,
+    "w_atr_expansion": 0.2680332720197082,
+    "w_retest": 0.02037921865779696,
+    "w_htf": 0.0,
+    "w_heat": 0.23242399728988175,
+    "w_body": 0.23300901760050954
+  },
+  "reeval_topn0": {
+    "profit_factor": 0.38281123000149075,
+    "total_pnl_net_rub": -153.07676035596953,
+    "pnl_without_top_1_trade": -203.82685984327514,
+    "n_trades": 11
+  },
+  "reeval_top3": {
+    "profit_factor": 0.2531006397655182,
+    "total_pnl_net_rub": -280.18492263675944,
+    "pnl_without_top_1_trade": -330.9350221240651,
+    "n_trades": 14
+  }
+}

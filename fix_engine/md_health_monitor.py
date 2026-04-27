@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from fix_engine.structured_logging import log_event
 
 if TYPE_CHECKING:
-    from fix_engine.market_data.market_data_engine import MarketDataEngine
+    from fix_engine.data.engine import MarketDataEngine
 
 
 class MdHealthMonitor:

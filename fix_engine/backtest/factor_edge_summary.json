@@ -1,0 +1,30 @@
+{
+  "n_trades": 8,
+  "quintile_effects": {
+    "impulse_strength": 0.0,
+    "atr_expansion": 0.0,
+    "retest_speed": 0.0,
+    "htf_score": 0.0,
+    "ema_distance": 0.0,
+    "candle_structure": 0.0
+  },
+  "median_split_effects": {
+    "impulse_strength": -82.36493045948106,
+    "atr_expansion": 153.66770556194803,
+    "retest_speed": 245.8369090610896,
+    "htf_score": 0.0,
+    "ema_distance": 70.4990659588787,
+    "candle_structure": -90.93828466627798
+  },
+  "suggested_weights": {
+    "combine_impulse": false,
+    "w_impulse": 0.22,
+    "w_impulse_strength": 0.0,
+    "w_atr_expansion": 0.3269500046716453,
+    "w_retest": 0.5230531572789312,
+    "w_htf": 0.0,
+    "w_heat": 0.14999683804942354,
+    "w_body": 0.0
+  },
+  "min_score_used": 0.6
+}

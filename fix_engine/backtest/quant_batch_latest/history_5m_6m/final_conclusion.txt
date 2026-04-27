@@ -1,0 +1,11 @@
+FACTOR RESEARCH — CONCLUSION
+===========================
+
+Trade count: 30
+Reliable (n >= 30): yes
+
+Rough 6M PnL extrapolation (NOT a target): -1298.67 RUB
+(Based on sample expectancy × frequency; invalid if no edge.)
+
+CONCLUSION: Edge gate passed — see model_metrics.json and reconstruction_eval.json.
+Validate out-of-sample before production; do not trust small samples.

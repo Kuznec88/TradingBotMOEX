@@ -1,12 +1,14 @@
 """T-Invest gRPC: лимитные ордера и поток состояний заявок (LIVE / sandbox orders).
 
 Используется при ExecutionMode=LIVE: ExecutionGateway маршрутизирует заявки сюда,
-исполнения приходят из order_state_stream и преобразуются в SyntheticExecutionReport.
+исполнения — из продового order_state_stream либо (sandbox) из опроса get_sandbox_orders.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 import uuid
 from decimal import Decimal
 from typing import Callable
@@ -17,8 +19,11 @@ from fix_engine.order_manager import OrderManager
 
 class TinkoffBrokerController:
     """
-    Общий контроллер: unary post/cancel под lock, отдельный поток order_state_stream.
+    Общий контроллер: unary post/cancel под lock; фон — продовый OrderStateStream
+    или (при post_sandbox_order) опрос get_sandbox_orders — отдельного gRPC-стрима песочницы нет.
     """
+
+    _SANDBOX_ORDERS_POLL_SEC = 2.0
 
     def __init__(
         self,
@@ -66,7 +71,17 @@ class TinkoffBrokerController:
         if self._stream_thread is not None and self._stream_thread.is_alive():
             return
 
-        def _run() -> None:
+        self._stop.clear()
+        if self._use_sandbox_orders:
+            self._stream_thread = threading.Thread(
+                target=self._run_sandbox_orders_poll_loop,
+                name="tbank-sandbox-orders-poll",
+                daemon=True,
+            )
+            self._stream_thread.start()
+            return
+
+        def _run_prod_stream() -> None:
             try:
                 from t_tech.invest import Client
                 from t_tech.invest.schemas import OrderStateStreamRequest
@@ -98,9 +113,43 @@ class TinkoffBrokerController:
                 if not self._stop.is_set():
                     self._logger.error("[TBANK][ORDERS] stream ended with error: %s", exc, exc_info=True)
 
-        self._stop.clear()
-        self._stream_thread = threading.Thread(target=_run, name="tbank-order-state-stream", daemon=True)
+        self._stream_thread = threading.Thread(target=_run_prod_stream, name="tbank-order-state-stream", daemon=True)
         self._stream_thread.start()
+
+    def _run_sandbox_orders_poll_loop(self) -> None:
+        """Sandbox API не отдаёт OrderStateStream; периодически тянем get_sandbox_orders."""
+        from t_tech.invest import Client
+
+        accs = list(dict.fromkeys(self._stream_accounts))
+        self._logger.info(
+            "[TBANK][ORDERS] sandbox: order_state_stream недоступен; polling get_sandbox_orders every %.1fs accounts=%s",
+            self._SANDBOX_ORDERS_POLL_SEC,
+            accs,
+        )
+        try:
+            while not self._stop.is_set():
+                try:
+                    with Client(self._token, target=self._host) as client:
+                        for acc in accs:
+                            if self._stop.is_set():
+                                break
+                            resp = client.sandbox.get_sandbox_orders(account_id=acc)
+                            for st in list(getattr(resp, "orders", []) or []):
+                                if self._stop.is_set():
+                                    break
+                                try:
+                                    self._handle_order_state(st)
+                                except Exception as exc:
+                                    self._logger.warning(
+                                        "[TBANK][ORDERS] sandbox poll handle_order_state: %s", exc, exc_info=True
+                                    )
+                except Exception as exc:
+                    if not self._stop.is_set():
+                        self._logger.warning("[TBANK][ORDERS] sandbox poll: %s", exc, exc_info=True)
+                self._stop.wait(timeout=self._SANDBOX_ORDERS_POLL_SEC)
+        except Exception as exc:
+            if not self._stop.is_set():
+                self._logger.error("[TBANK][ORDERS] sandbox poll loop ended: %s", exc, exc_info=True)
 
     def stop_order_stream(self) -> None:
         self._stop.set()
@@ -192,7 +241,7 @@ class TinkoffBrokerController:
             broker_id or "?",
             lots,
             float(price),
-            int(getattr(resp, "execution_report_status", 0) or 0),
+            self._exec_report_status_to_int(getattr(resp, "execution_report_status", None)),
         )
 
         self._emit_from_post_response(resp, cl_ord_id=cl_ord_id, symbol=symbol.upper())
@@ -220,6 +269,20 @@ class TinkoffBrokerController:
         self._logger.info("[TBANK][ORDERS] cancel sent cl_ord_id=%s broker_order_id=%s", cl_ord_id, broker_id)
         return f"CANCEL-{broker_id}"
 
+    @staticmethod
+    def _exec_report_status_to_int(raw: object) -> int:
+        if raw is None:
+            return 0
+        if hasattr(raw, "value"):
+            try:
+                return int(raw.value)
+            except (TypeError, ValueError):
+                return 0
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
     def _qty_to_lots(self, qty: float) -> int:
         raw = float(qty) / float(self._shares_per_lot)
         lots = int(round(raw))
@@ -236,7 +299,7 @@ class TinkoffBrokerController:
     def _emit_from_post_response(self, resp: object, *, cl_ord_id: str, symbol: str) -> None:
         from t_tech.invest.utils import money_to_decimal
 
-        st = int(getattr(resp, "execution_report_status", 0) or 0)
+        st = self._exec_report_status_to_int(getattr(resp, "execution_report_status", None))
         lots_req = int(getattr(resp, "lots_requested", 0) or 0)
         lots_done = int(getattr(resp, "lots_executed", 0) or 0)
         self._last_lots_executed[cl_ord_id] = lots_done
@@ -294,11 +357,18 @@ class TinkoffBrokerController:
             return
 
         sym = str(getattr(st, "ticker", "") or self._symbol).upper()
-        st_code = int(getattr(st, "execution_report_status", 0) or 0)
+        st_code = self._exec_report_status_to_int(getattr(st, "execution_report_status", None))
         lot_sz = int(getattr(st, "lot_size", 0) or 0) or self._shares_per_lot
         lots_exec = int(getattr(st, "lots_executed", 0) or 0)
         prev = int(self._last_lots_executed.get(cl_ord_id, 0))
         delta_lots = max(0, lots_exec - prev)
+
+        lots_left_attr = getattr(st, "lots_left", None)
+        if lots_left_attr is not None:
+            lots_left = int(lots_left_attr or 0)
+        else:
+            lots_req = int(getattr(st, "lots_requested", 0) or 0)
+            lots_left = max(0, lots_req - lots_exec)
 
         px_obj = getattr(st, "executed_order_price", None)
         last_px = 0.0
@@ -315,17 +385,16 @@ class TinkoffBrokerController:
 
         ord_status, exec_type, _ = self._map_stream_status(
             st_code,
-            lots_left=int(getattr(st, "lots_left", 0) or 0),
+            lots_left=lots_left,
             lots_executed=lots_exec,
             order_qty=order_qty,
             lot_size=lot_sz,
         )
 
         # Дубли post_order (тот же lots_executed) и пустые тики — отбрасываем; terminal без объёма оставляем.
-        if delta_lots <= 0 and st_code not in {
-            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_REJECTED,
-            OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_CANCELLED,
-        }:
+        rej = self._exec_report_status_to_int(OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_REJECTED)
+        can = self._exec_report_status_to_int(OrderExecutionReportStatus.EXECUTION_REPORT_STATUS_CANCELLED)
+        if delta_lots <= 0 and st_code not in {rej, can}:
             return
 
         msg = self._synthetic_er(

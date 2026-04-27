@@ -1,2 +1,2 @@
-"""Strategy engine and plugins."""
+"""Торговые стратегии (сигналы, live-раннеры)."""
 

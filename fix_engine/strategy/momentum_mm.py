@@ -8,11 +8,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from statistics import mean
 
-from fix_engine.execution_gateway import ExecutionGateway
-from fix_engine.market_data.models import MarketData
+from fix_engine.data.models import MarketData
+from fix_engine.execution.gateway import ExecutionGateway
 from fix_engine.order_models import MarketType, OrderRequest
 from fix_engine.position_manager import PositionManager
-from fix_engine.risk_manager import RiskManager
+from fix_engine.risk.manager import RiskManager
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:

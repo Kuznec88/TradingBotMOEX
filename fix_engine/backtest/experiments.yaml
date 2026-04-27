@@ -1,0 +1,106 @@
+# Матрица ~27 конфигов: без полного факторного перебора.
+# База для 1h CSV: без HTF и без обязательного всплеска объёма.
+defaults:
+  htf_resample_rule: ""
+  volume_spike_required: false
+
+configs:
+  # --- Block A: max_retest_bars_fast (окно «быстрого» касания) × min_atr_expansion ---
+  - id: A_r2_e100
+    max_retest_bars_fast: 2
+    min_atr_expansion: 1.0
+  - id: A_r2_e105
+    max_retest_bars_fast: 2
+    min_atr_expansion: 1.05
+  - id: A_r2_e110
+    max_retest_bars_fast: 2
+    min_atr_expansion: 1.1
+  - id: A_r2_e120
+    max_retest_bars_fast: 2
+    min_atr_expansion: 1.2
+  - id: A_r4_e100
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.0
+  - id: A_r4_e105
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.05
+  - id: A_r4_e110
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.1
+  - id: A_r4_e120
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.2
+  - id: A_r6_e100
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.0
+  - id: A_r6_e105
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.05
+  - id: A_r6_e110
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.1
+  - id: A_r6_e120
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.2
+  - id: A_r8_e100
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.0
+  - id: A_r8_e105
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.05
+  - id: A_r8_e110
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.1
+  - id: A_r8_e120
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.2
+
+  # --- Block B: сила импульса (range vs max) × retest 4/8, atr=1.05 ---
+  - id: B_imp135_r4
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.05
+    impulse_strength: 1.35
+  - id: B_imp135_r8
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.05
+    impulse_strength: 1.35
+  - id: B_imp108_r4
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.05
+    impulse_strength: 1.08
+  - id: B_imp108_r8
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.05
+    impulse_strength: 1.08
+  - id: B_imp081_r4
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.05
+    impulse_strength: 0.81
+  - id: B_imp081_r8
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.05
+    impulse_strength: 0.81
+  - id: B_imp000_r4
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.05
+    impulse_strength: 0
+    impulse_k: 0
+  - id: B_imp000_r8
+    max_retest_bars_fast: 8
+    min_atr_expansion: 1.05
+    impulse_strength: 0
+    impulse_k: 0
+
+  # --- Block C: min_range_atr_ratio (−10% / −20% от 2.5) ---
+  - id: C_range225
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.08
+    min_range_atr_ratio: 2.25
+  - id: C_range200
+    max_retest_bars_fast: 6
+    min_atr_expansion: 1.08
+    min_range_atr_ratio: 2.0
+  - id: C_range225_r4
+    max_retest_bars_fast: 4
+    min_atr_expansion: 1.08
+    min_range_atr_ratio: 2.25

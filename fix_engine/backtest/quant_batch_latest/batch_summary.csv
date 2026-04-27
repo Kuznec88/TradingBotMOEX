@@ -1,0 +1,8 @@
+frame,instrument,n_trades,reliable,edge_gate,sum_pnl,winrate,n_interactions_passing_filter,model_ok,reconstruction_ran,projected_6m_pnl_rub,out_dir
+_hist_candles.csv,_hist_candles,3,False,False,191.14412133371556,0.6666666666666666,0,False,False,,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\_hist_candles
+_hist_candles_1h.csv,_hist_candles_1h,4,False,False,168.20044898116888,0.75,0,False,False,,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\_hist_candles_1h
+history_15m_6m.csv,history_15m_6m,11,False,False,-201.27071720974106,0.5454545454545454,0,False,False,-208.21108676869767,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\history_15m_6m
+history_1h_12m.csv,history_1h_12m,8,False,False,-274.9277200007726,0.5,0,False,False,-419.3812677977886,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\history_1h_12m
+history_1h_24m.csv,history_1h_24m,8,False,False,-274.9277200007726,0.5,0,False,False,-419.3812677977886,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\history_1h_24m
+history_1h_6m.csv,history_1h_6m,8,False,False,-274.92771840962405,0.5,0,False,False,-419.38126537061294,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\history_1h_6m
+history_5m_6m.csv,history_5m_6m,30,True,True,-1212.0930381923295,0.3,0,True,True,-1298.6711123489245,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\quant_batch_latest\history_5m_6m

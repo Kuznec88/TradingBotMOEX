@@ -1,0 +1,4 @@
+frame,n_trades,sum_pnl,avg_pnl_rub,winrate_pct,implied_qty_multiplier_6m_target,reliable,edge_gate,projected_6m_pnl_rub,projected_6m_account_rub,planned_contracts,model_ok,n_interactions_passing_filter,n_interactions_pairwise,n_interactions_triple,reconstruction_ran
+history_15m_6m.csv,4,-80.17918811169417,-20.04,25.0,,False,False,-801.7918811169418,-40089.59405584709,50.0,False,0,0,0,False
+history_1h_6m.csv,2,-158.10167621046037,-79.05,0.0,,False,False,-3794.440229051049,-189722.01145255246,50.0,False,0,0,0,False
+history_5m_6m.csv,15,-38.796737905721,-2.59,20.0,,False,False,-65.88125304745077,-3294.0626523725387,50.0,True,0,0,0,False

@@ -1,0 +1,7 @@
+FACTOR RESEARCH — CONCLUSION
+===========================
+
+Trade count: 11
+Reliable (n >= 30): NO — results marked unreliable
+
+No statistical edge can be claimed on this sample size.

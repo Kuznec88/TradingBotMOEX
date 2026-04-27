@@ -1,0 +1,46 @@
+# Мульти-датасетный свип: один базовый набор параметров стратегии, разные CSV + HTF.
+# CSV создаются: python -m fix_engine.tools.fetch_tbank_candles_history --interval ... --days ... --out ...
+# Другие инструменты: тот же скрипт с --instrument-id <UID из T-Invest>.
+#
+# HTF: правило pandas resample (напр. 1h, 4h, 15min). Пустая строка = без HTF.
+
+baseline_params:
+  volume_spike_required: false
+  # Остальное — дефолты SwingBreakoutParams (как в settings / прод-логике)
+
+datasets:
+  - run_id: sber_1h_6m_nohtf
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: ""
+
+  - run_id: sber_1h_6m_htf4h
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: "4h"
+
+  - run_id: sber_15m_6m_htf1h
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: "1h"
+
+  - run_id: sber_5m_6m_htf15m
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_5m_6m.csv
+    htf_resample_rule: "15min"
+
+  - run_id: sber_1h_12m_nohtf
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_1h_12m.csv
+    htf_resample_rule: ""
+
+  - run_id: sber_1h_24m_nohtf
+    instrument_label: primary_cfg
+    csv: fix_engine/backtest/history_1h_24m.csv
+    htf_resample_rule: ""
+
+  # Пример второго тикера: раскомментируйте после fetch с --instrument-id
+  # - run_id: alt_1h_6m_nohtf
+  #   instrument_label: other_uid
+  #   csv: fix_engine/backtest/history_1h_6m_alt.csv
+  #   htf_resample_rule: ""

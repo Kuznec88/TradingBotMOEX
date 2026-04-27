@@ -1,0 +1,7 @@
+factor,raw_column,n_trades,n_nonnull,unreliable_small_sample,pearson_pnl,spearman_pnl,monotonic_bins,monotonicity_rho,spearman_train,spearman_test,sign_consistent,stability_score
+impulse_strength,raw_impulse_strength,4,4,True,-0.9788485979718206,-1.0,False,0.0,,,,0.0
+atr_expansion,raw_atr_expansion,4,4,True,0.12068854842215977,0.2,False,0.0,,,,0.0
+retest_speed,raw_retest_speed,4,4,True,0.7688694562984455,0.8,False,0.0,,,,0.0
+htf_score,raw_htf_score,4,4,True,,-0.4,False,0.0,,,,0.0
+ema_distance,raw_ema_distance,4,4,True,-0.4507391784567883,-0.4,False,0.0,,,,0.0
+candle_structure,raw_candle_structure,4,4,True,-0.2015965768362287,0.0,False,0.0,,,,0.0

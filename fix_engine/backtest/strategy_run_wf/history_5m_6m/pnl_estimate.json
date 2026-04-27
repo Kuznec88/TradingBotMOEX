@@ -1,0 +1,158 @@
+{
+  "pnl_convention": {
+    "unit": "rub_per_contract",
+    "backtest_qty": 1.0,
+    "planned_contracts_for_account_view": 50.0
+  },
+  "sample": {
+    "n": 15,
+    "expectancy": -2.5864491937147336,
+    "expectancy_decomposition": {
+      "n": 15.0,
+      "winrate": 0.2,
+      "avg_win": 18.020285214587762,
+      "avg_loss": -7.7381327957903565,
+      "expectancy_from_components": -2.5864491937147327,
+      "mean_pnl": -2.5864491937147336
+    },
+    "profit_factor": 0.5821910042817768,
+    "pnl_wo_top1": -84.30635759197403,
+    "winrate": 0.2,
+    "sum_pnl": -38.796737905721
+  },
+  "expectancy_decomposition": {
+    "n": 15.0,
+    "winrate": 0.2,
+    "avg_win": 18.020285214587762,
+    "avg_loss": -7.7381327957903565,
+    "expectancy_from_components": -2.5864491937147327,
+    "mean_pnl": -2.5864491937147336
+  },
+  "extrapolation_6m": {
+    "pnl_unit": "rub_per_contract",
+    "expectancy_rub_per_trade": -2.5864491937147336,
+    "trades_per_month_est": 4.245283018867925,
+    "span_days_est": 106.0,
+    "projected_6m_pnl_rub": -65.88125304745077,
+    "note": "extrapolation_not_forecast",
+    "projected_6m_account_rub_at_planned_contracts": -3294.0626523725387,
+    "planned_contracts_for_account_view": 50.0
+  },
+  "holdout_train_test": {
+    "train": {
+      "n": 10,
+      "expectancy": -1.9033096927390425,
+      "expectancy_decomposition": {
+        "n": 10.0,
+        "winrate": 0.2,
+        "avg_win": 23.71347199308468,
+        "avg_loss": -8.307505114194973,
+        "expectancy_from_components": -1.9033096927390423,
+        "mean_pnl": -1.9033096927390425
+      },
+      "profit_factor": 0.7136159312308351,
+      "pnl_wo_top1": -64.54271661364345,
+      "winrate": 0.2,
+      "sum_pnl": -19.033096927390424
+    },
+    "test": {
+      "n": 5,
+      "expectancy": -3.9527281956661158,
+      "expectancy_decomposition": {
+        "n": 5.0,
+        "winrate": 0.2,
+        "avg_win": 6.633911657593928,
+        "avg_loss": -6.599388158981127,
+        "expectancy_from_components": -3.9527281956661167,
+        "mean_pnl": -3.9527281956661158
+      },
+      "profit_factor": 0.2513078295207495,
+      "pnl_wo_top1": -26.397552635924505,
+      "winrate": 0.2,
+      "sum_pnl": -19.763640978330578
+    },
+    "train_frac": 0.7,
+    "n_train": 10,
+    "n_test": 5
+  },
+  "bootstrap": {
+    "n": 15,
+    "n_bootstrap": 2000,
+    "sum_pnl_mean": -38.791979158058226,
+    "sum_pnl_pctiles": {
+      "p5": -112.45690988806038,
+      "p50": -45.272345690624014,
+      "p95": 62.26996801013531
+    },
+    "profit_factor_mean": 0.6533486256987426,
+    "profit_factor_pctiles": {
+      "p5": 0.017372796076118042,
+      "p50": 0.5309984338535518,
+      "p95": 1.9179555092631948
+    },
+    "pnl_wo_top1_pctiles": {
+      "p5": -119.43975225816035,
+      "p50": -80.7886664276791,
+      "p95": 16.760348323882276
+    }
+  },
+  "target_6m_sizing": {
+    "pnl_unit": "rub_per_contract",
+    "planned_contracts": 50.0,
+    "target_6m_per_contract_rub": 800.0,
+    "target_6m_account_rub": 40000.0,
+    "projected_6m_pnl_rub": -65.88125304745077,
+    "implied_qty_multiplier": null,
+    "note": "negative_or_zero_edge_scaling_wont_fix"
+  },
+  "walk_forward_trade_buckets": {
+    "n_buckets": 4,
+    "note": "chronological_equal_count_trade_buckets",
+    "buckets": [
+      {
+        "bucket": 0,
+        "t_start": "2025-12-17T08:10:00+00:00",
+        "t_end": "2026-03-23T12:15:00+00:00",
+        "n": 4,
+        "expectancy": 4.33235195550948,
+        "profit_factor": 1.6149495222228551,
+        "pnl_wo_top1": -28.180211864215114,
+        "sum_pnl": 17.32940782203792,
+        "winrate": 0.25
+      },
+      {
+        "bucket": 1,
+        "t_start": "2026-03-24T09:20:00+00:00",
+        "t_end": "2026-03-26T09:05:00+00:00",
+        "n": 4,
+        "expectancy": -6.240995963369935,
+        "profit_factor": 0.07132555785511896,
+        "pnl_wo_top1": -26.88130815339607,
+        "sum_pnl": -24.96398385347974,
+        "winrate": 0.25
+      },
+      {
+        "bucket": 2,
+        "t_start": "2026-03-27T14:05:00+00:00",
+        "t_end": "2026-03-31T08:20:00+00:00",
+        "n": 4,
+        "expectancy": -3.3116670781314914,
+        "profit_factor": 0.3336880346330219,
+        "pnl_wo_top1": -19.880579970119893,
+        "sum_pnl": -13.246668312525966,
+        "winrate": 0.25
+      },
+      {
+        "bucket": 3,
+        "t_start": "2026-04-01T06:00:00+00:00",
+        "t_end": "2026-04-03T07:20:00+00:00",
+        "n": 3,
+        "expectancy": -5.971831187251072,
+        "profit_factor": 0.0,
+        "pnl_wo_top1": -16.332079121285517,
+        "sum_pnl": -17.915493561753216,
+        "winrate": 0.0
+      }
+    ]
+  }
+}

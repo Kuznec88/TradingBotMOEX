@@ -1,0 +1,10 @@
+FACTOR RESEARCH — CONCLUSION
+===========================
+
+Trade count: 8
+Reliable (n >= 30): NO — results marked unreliable
+
+Rough 6M PnL extrapolation (NOT a target): -419.38 RUB
+(Based on sample expectancy × frequency; invalid if no edge.)
+
+No statistical edge can be claimed on this sample size.

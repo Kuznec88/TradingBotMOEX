@@ -1,0 +1,17 @@
+FACTOR RESEARCH — CONCLUSION
+===========================
+
+Trade count: 4
+Reliable (n >= 30): NO — results marked unreliable
+
+Rough 6M PnL per 1 contract (NOT a target): -801.79 RUB
+  → at planned size ×50: ~-40089.59 RUB / 6M on account (linear scale).
+(Expectancy × estimated frequency over 6 months; not optimized.)
+
+Business target sizing: projected 6M edge ≤ 0 — hitting a positive RUB goal requires better expectancy, not larger size.
+
+PnL without top-1 trade (sample): -93.11 RUB
+
+Edge gate detail: n_lt_min_trades
+
+No statistical edge can be claimed on this sample size.

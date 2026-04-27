@@ -1,0 +1,21 @@
+# Скопируйте в research_instruments.yaml и подставьте UID из T-Invest (инструмент → скопировать ID).
+# Загрузка: python -m fix_engine.tools.fetch_research_bundle --config fix_engine/backtest/research_instruments.yaml
+#
+# Пустой instrument_id = взять TBankInstrumentId из settings (один «primary»).
+
+instruments:
+  - label: primary
+    instrument_id: ""
+    intervals:
+      - { interval: 1h, days: 183, out: fix_engine/backtest/history_1h_6m.csv }
+      - { interval: 15m, days: 183, out: fix_engine/backtest/history_15m_6m.csv }
+      - { interval: 5m, days: 183, out: fix_engine/backtest/history_5m_6m.csv }
+      # Дополнительно, например год+:
+      # - { interval: 1h, days: 400, out: fix_engine/backtest/history_1h_12m.csv }
+
+  # Примеры (замените UUID):
+  # - label: gazp
+  #   instrument_id: "00000000-0000-0000-0000-000000000000"
+  #   intervals:
+  #     - { interval: 1h, days: 183, out: fix_engine/backtest/history_1h_6m_gazp.csv }
+  #     - { interval: 15m, days: 183, out: fix_engine/backtest/history_15m_6m_gazp.csv }

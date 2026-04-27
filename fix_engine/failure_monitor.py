@@ -5,8 +5,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from fix_engine.execution_gateway import ExecutionGateway
-from fix_engine.market_data.models import MarketData
+from fix_engine.data.models import MarketData
+from fix_engine.execution.gateway import ExecutionGateway
 from fix_engine.order_manager import OrderManager
 
 

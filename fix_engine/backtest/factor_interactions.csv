@@ -1,0 +1,5 @@
+interaction,n,avg_pnl,winrate,profit_factor,pnl_wo_top1
+high_atr_expansion_and_fast_retest,3,97.24845989240153,1.0,,105.49312619528334
+high_atr_expansion_slow_retest,1,-121.8738285536948,0.0,0.0,0.0
+low_atr_expansion_fast_retest,1,62.46457844458836,1.0,,0.0
+htf_high_and_pullback,4,-157.28441953064137,0.0,0.0,-507.2638495688707

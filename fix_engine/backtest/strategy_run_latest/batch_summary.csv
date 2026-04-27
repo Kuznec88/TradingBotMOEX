@@ -1,0 +1,4 @@
+frame,instrument,n_trades,reliable,edge_gate,sum_pnl,winrate,n_interactions_pairwise,n_interactions_triple,n_interactions_passing_filter,model_ok,reconstruction_ran,projected_6m_pnl_rub,projected_6m_account_rub,planned_contracts,implied_qty_multiplier_6m_target,out_dir
+history_15m_6m.csv,history_15m_6m,4,False,False,-80.17918811169417,0.25,0,0,0,False,False,-801.7918811169418,-40089.59405584709,50.0,,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\strategy_run_latest\history_15m_6m
+history_1h_6m.csv,history_1h_6m,2,False,False,-158.10167621046037,0.0,0,0,0,False,False,-3794.440229051049,-189722.01145255246,50.0,,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\strategy_run_latest\history_1h_6m
+history_5m_6m.csv,history_5m_6m,15,False,False,-38.796737905721,0.2,0,0,0,True,False,-65.88125304745077,-3294.0626523725387,50.0,,C:\Users\Admin\Python Projects\TradingBotMOEX\fix_engine\backtest\strategy_run_latest\history_5m_6m

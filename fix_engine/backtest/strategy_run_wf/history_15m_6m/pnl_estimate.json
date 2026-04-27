@@ -1,0 +1,109 @@
+{
+  "pnl_convention": {
+    "unit": "rub_per_contract",
+    "backtest_qty": 1.0,
+    "planned_contracts_for_account_view": 50.0
+  },
+  "sample": {
+    "n": 4,
+    "expectancy": -20.044797027923543,
+    "expectancy_decomposition": {
+      "n": 4.0,
+      "winrate": 0.25,
+      "avg_win": 12.931881173105367,
+      "avg_loss": -31.03702309493318,
+      "expectancy_from_components": -20.044797027923543,
+      "mean_pnl": -20.044797027923543
+    },
+    "profit_factor": 0.13888661436751976,
+    "pnl_wo_top1": -93.11106928479954,
+    "winrate": 0.25,
+    "sum_pnl": -80.17918811169417
+  },
+  "expectancy_decomposition": {
+    "n": 4.0,
+    "winrate": 0.25,
+    "avg_win": 12.931881173105367,
+    "avg_loss": -31.03702309493318,
+    "expectancy_from_components": -20.044797027923543,
+    "mean_pnl": -20.044797027923543
+  },
+  "extrapolation_6m": {
+    "pnl_unit": "rub_per_contract",
+    "expectancy_rub_per_trade": -20.044797027923543,
+    "trades_per_month_est": 6.666666666666667,
+    "span_days_est": 18.0,
+    "projected_6m_pnl_rub": -801.7918811169418,
+    "note": "extrapolation_not_forecast",
+    "projected_6m_account_rub_at_planned_contracts": -40089.59405584709,
+    "planned_contracts_for_account_view": 50.0
+  },
+  "holdout_train_test": {
+    "train": {},
+    "test": {},
+    "note": "too_few_rows"
+  },
+  "bootstrap": {
+    "note": "too_few_trades",
+    "n": 4
+  },
+  "target_6m_sizing": {
+    "pnl_unit": "rub_per_contract",
+    "planned_contracts": 50.0,
+    "target_6m_per_contract_rub": 800.0,
+    "target_6m_account_rub": 40000.0,
+    "projected_6m_pnl_rub": -801.7918811169418,
+    "implied_qty_multiplier": null,
+    "note": "negative_or_zero_edge_scaling_wont_fix"
+  },
+  "walk_forward_trade_buckets": {
+    "n_buckets": 4,
+    "note": "chronological_equal_count_trade_buckets",
+    "buckets": [
+      {
+        "bucket": 0,
+        "t_start": "2026-03-09T07:00:00+00:00",
+        "t_end": "2026-03-09T07:00:00+00:00",
+        "n": 1,
+        "expectancy": -43.346074912738075,
+        "profit_factor": 0.0,
+        "pnl_wo_top1": 0.0,
+        "sum_pnl": -43.346074912738075,
+        "winrate": 0.0
+      },
+      {
+        "bucket": 1,
+        "t_start": "2026-03-09T15:30:00+00:00",
+        "t_end": "2026-03-09T15:30:00+00:00",
+        "n": 1,
+        "expectancy": -35.858281117100255,
+        "profit_factor": 0.0,
+        "pnl_wo_top1": 0.0,
+        "sum_pnl": -35.858281117100255,
+        "winrate": 0.0
+      },
+      {
+        "bucket": 2,
+        "t_start": "2026-03-11T06:45:00+00:00",
+        "t_end": "2026-03-11T06:45:00+00:00",
+        "n": 1,
+        "expectancy": 12.931881173105367,
+        "profit_factor": null,
+        "pnl_wo_top1": 0.0,
+        "sum_pnl": 12.931881173105367,
+        "winrate": 1.0
+      },
+      {
+        "bucket": 3,
+        "t_start": "2026-03-27T15:30:00+00:00",
+        "t_end": "2026-03-27T15:30:00+00:00",
+        "n": 1,
+        "expectancy": -13.906713254961216,
+        "profit_factor": 0.0,
+        "pnl_wo_top1": 0.0,
+        "sum_pnl": -13.906713254961216,
+        "winrate": 0.0
+      }
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "min_trades_per_timeframe": 100,
+  "min_span_bars": 300,
+  "min_segment_n": 20,
+  "timeframes": [
+    {
+      "label": "15m_1h_htf",
+      "csv": "logs/trades_log_15m.csv",
+      "bar_minutes": 15,
+      "description": "15m LTF, 1h HTF in strategy"
+    },
+    {
+      "label": "1h_4h_htf",
+      "csv": "logs/trades_log_1h.csv",
+      "bar_minutes": 60,
+      "description": "1h LTF, 4h HTF"
+    },
+    {
+      "label": "4h_no_htf",
+      "csv": "logs/trades_log_4h.csv",
+      "bar_minutes": 240,
+      "description": "4h, no HTF"
+    }
+  ]
+}

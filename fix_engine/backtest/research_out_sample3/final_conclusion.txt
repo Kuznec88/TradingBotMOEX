@@ -1,0 +1,14 @@
+FACTOR RESEARCH — CONCLUSION
+===========================
+
+Trade count: 30
+Reliable (n >= 30): yes
+
+CONCLUSION: No statistical edge detected under conservative gates.
+
+Suggested features to implement next (not optimized here):
+- Liquidity sweep / false breakout (wick beyond level + rejection)
+- Volatility compression then expansion (BB width, ATR percentile)
+- Time-of-day / session effects (auction, open, close)
+- Level rejection vs breakout (close back inside range)
+- Volatility regime shift (HMM or changepoint on realized vol)

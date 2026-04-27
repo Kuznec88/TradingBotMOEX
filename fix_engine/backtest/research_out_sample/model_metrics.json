@@ -1,0 +1,36 @@
+{
+  "ok": true,
+  "reason": "",
+  "metrics": {
+    "logistic_roc_auc_mean": 0.5208333333333333,
+    "logistic_roc_auc_std": 0.14877975892797604,
+    "ridge_r2_mean": -1.5204261961814294,
+    "ridge_r2_std": 1.049744470518084,
+    "rf_clf_roc_auc_mean": 0.3125,
+    "rf_reg_r2_mean": -1.1419450899560741
+  },
+  "feature_importance": {
+    "random_forest_classifier": {
+      "raw_impulse_strength": 0.3196620748306356,
+      "raw_atr_expansion": 0.20643693820402179,
+      "raw_retest_speed": 0.0050920208109483086,
+      "raw_htf_score": 0.0,
+      "raw_ema_distance": 0.2768342855928923,
+      "raw_candle_structure": 0.19197468056150205
+    },
+    "random_forest_regressor": {
+      "raw_impulse_strength": 0.3822196953798459,
+      "raw_atr_expansion": 0.21574793780220305,
+      "raw_retest_speed": 0.0,
+      "raw_htf_score": 0.0,
+      "raw_ema_distance": 0.16077025651403898,
+      "raw_candle_structure": 0.24126211030391215
+    }
+  },
+  "predicted_score_stats": {
+    "mean": 0.31798523929773936,
+    "std": 0.20959437530146652
+  },
+  "n_samples": 30,
+  "unreliable_n_lt_30": false
+}

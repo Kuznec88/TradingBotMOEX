@@ -1,0 +1,92 @@
+{
+  "n_trades": 11,
+  "unreliable_n_lt_30": true,
+  "factors": {
+    "impulse_strength": {
+      "raw_column": "raw_impulse_strength",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": -0.041080522658778006,
+      "spearman_pnl": -0.045454545454545456,
+      "monotonic_bins": false,
+      "monotonicity_rho": 0.5,
+      "spearman_train": 0.14285714285714285,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    },
+    "atr_expansion": {
+      "raw_column": "raw_atr_expansion",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": 0.2826655197834878,
+      "spearman_pnl": 0.39090909090909093,
+      "monotonic_bins": true,
+      "monotonicity_rho": 1.0,
+      "spearman_train": 0.21428571428571427,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    },
+    "retest_speed": {
+      "raw_column": "raw_retest_speed",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": 0.5976416981018796,
+      "spearman_pnl": 0.21818181818181817,
+      "monotonic_bins": false,
+      "monotonicity_rho": 0.0,
+      "spearman_train": 0.03571428571428571,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    },
+    "htf_score": {
+      "raw_column": "raw_htf_score",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": null,
+      "spearman_pnl": 0.12727272727272726,
+      "monotonic_bins": false,
+      "monotonicity_rho": 0.0,
+      "spearman_train": 0.21428571428571427,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    },
+    "ema_distance": {
+      "raw_column": "raw_ema_distance",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": 0.3941442635032933,
+      "spearman_pnl": 0.5181818181818182,
+      "monotonic_bins": true,
+      "monotonicity_rho": 1.0,
+      "spearman_train": 0.42857142857142855,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    },
+    "candle_structure": {
+      "raw_column": "raw_candle_structure",
+      "n_trades": 11,
+      "n_nonnull": 11,
+      "unreliable_small_sample": true,
+      "pearson_pnl": -0.2418347057732173,
+      "spearman_pnl": -0.18181818181818182,
+      "monotonic_bins": true,
+      "monotonicity_rho": 1.0,
+      "spearman_train": -0.39285714285714285,
+      "spearman_test": null,
+      "sign_consistent": null,
+      "stability_score": 0.0
+    }
+  },
+  "instrument": "history_15m_6m",
+  "csv": "C:\\Users\\Admin\\Python Projects\\TradingBotMOEX\\fix_engine\\backtest\\history_15m_6m.csv"
+}

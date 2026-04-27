@@ -1,0 +1,140 @@
+# Quant sweep: strict TF/HTF + ослабление фильтров (без полного факторного перебора).
+# volume_spike_required: false — как в исследованиях; остальное из SwingBreakoutParams, если не переопределено.
+
+baseline_params:
+  volume_spike_required: false
+
+datasets:
+  # --- Strict: все заявленные сочетания ТФ / HTF ---
+  - run_id: strict_1h_nohtf
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: ""
+
+  - run_id: strict_1h_htf4h
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: "4h"
+
+  - run_id: strict_15m_nohtf
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: ""
+
+  - run_id: strict_15m_htf1h
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: "1h"
+
+  - run_id: strict_5m_nohtf
+    instrument_label: primary
+    csv: fix_engine/backtest/history_5m_6m.csv
+    htf_resample_rule: ""
+
+  - run_id: strict_5m_htf15m
+    instrument_label: primary
+    csv: fix_engine/backtest/history_5m_6m.csv
+    htf_resample_rule: "15min"
+
+  # --- 1h + 4h HTF: смягчить HTF-наклон + ретест/ATR/range/импульс ---
+  - run_id: relax_1h_htf4h_htfSlope0
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: "4h"
+    params:
+      htf_min_slope_norm: 0.0
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.02
+      min_range_atr_ratio: 2.15
+      impulse_strength: 1.08
+
+  # --- 15m: «чистая структура» без HTF + умеренное ослабление ---
+  - run_id: relax_15m_nohtf_A
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: ""
+    params:
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.02
+      min_range_atr_ratio: 2.15
+      impulse_strength: 1.08
+
+  - run_id: relax_15m_nohtf_B
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: ""
+    params:
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.0
+      min_range_atr_ratio: 2.0
+      impulse_strength: 0.81
+
+  # --- 15m + 1h HTF: только ослабление HTF-наклона + чуть шире ретест ---
+  - run_id: relax_15m_htf1h_htfSlope0
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: "1h"
+    params:
+      htf_min_slope_norm: 0.0
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.02
+
+  - run_id: relax_15m_htf1h_fullMild
+    instrument_label: primary
+    csv: fix_engine/backtest/history_15m_6m.csv
+    htf_resample_rule: "1h"
+    params:
+      htf_min_slope_norm: 0.0
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.0
+      min_range_atr_ratio: 2.0
+      impulse_strength: 1.08
+
+  # --- 5m: без HTF + ослабление ---
+  - run_id: relax_5m_nohtf_A
+    instrument_label: primary
+    csv: fix_engine/backtest/history_5m_6m.csv
+    htf_resample_rule: ""
+    params:
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.02
+      min_range_atr_ratio: 2.15
+      impulse_strength: 1.08
+
+  - run_id: relax_5m_htf15m_htfSlope0
+    instrument_label: primary
+    csv: fix_engine/backtest/history_5m_6m.csv
+    htf_resample_rule: "15min"
+    params:
+      htf_min_slope_norm: 0.0
+      max_retest_bars_fast: 8
+      min_atr_expansion: 1.02
+      min_range_atr_ratio: 2.15
+
+  # --- Длиннее окно по файлу (если брокер отдал больше баров, чем в history_1h_6m) ---
+  - run_id: strict_1h_12m_nohtf
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_12m.csv
+    htf_resample_rule: ""
+
+  - run_id: strict_1h_24m_nohtf
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_24m.csv
+    htf_resample_rule: ""
+
+  # --- 1h baseline чуть шире ретест (контроль: не ломает ли структуру) ---
+  - run_id: relax_1h_nohtf_retest8
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: ""
+    params:
+      max_retest_bars_fast: 8
+
+  - run_id: relax_1h_nohtf_mildATRrange
+    instrument_label: primary
+    csv: fix_engine/backtest/history_1h_6m.csv
+    htf_resample_rule: ""
+    params:
+      max_retest_bars_fast: 7
+      min_atr_expansion: 1.02
+      min_range_atr_ratio: 2.2

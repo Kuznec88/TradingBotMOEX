@@ -13,7 +13,10 @@ def read_tinvest_token_from_dir(
     cfg_dir: Path,
     file_names: tuple[str, ...] = ("settings.local.cfg",),
 ) -> str:
-    """Токен только из settings.local.cfg, ключ TBankSandboxToken (без env и без других ключей)."""
+    """Токен из активной (не с #) строки `TBankSandboxToken=...` в settings.local.cfg.
+
+    Читаются только указанные файлы (по умолчанию один settings.local.cfg), без env и без других ключей.
+    """
     v = read_cfg_value_from_dir(cfg_dir, TINVEST_TOKEN_LOCAL_KEY, "", file_names=file_names)
     return v.strip()
 
@@ -31,13 +34,18 @@ def find_cfg_value_from_dir(
         path = cfg_dir / name
         if not path.exists():
             continue
-        for raw in path.read_text(encoding="utf-8").splitlines():
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        for raw in text.splitlines():
             line = raw.strip().lstrip("\ufeff")
             if not line or line.startswith("#") or line.startswith(";") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
             if k.strip() == key:
-                return v.strip()
+                val = v.split("#", 1)[0].strip()
+                return val
     return None
 
 

@@ -1,0 +1,8 @@
+variant,n_trades,profit_factor,total_pnl_net_rub,pnl_without_top_1_trade,winrate,delta_pf_vs_baseline,delta_pnl_wo_top1_vs_baseline,classification
+baseline_all_factors,1,,148.27098577077203,0.0,1.0,0.0,0.0,baseline
+drop_impulse_strength,3,,230.7292627452021,64.1843910561893,1.0,0.0,64.1843910561893,unreliable
+drop_atr_expansion,2,2.0577278503285976,78.55142759526528,-74.2643086979909,0.5,2.0577278503285976,-74.2643086979909,unreliable
+drop_retest_speed,1,,144.12490637427072,0.0,1.0,0.0,0.0,unreliable
+drop_htf_score,1,,138.77566883834703,0.0,1.0,0.0,0.0,unreliable
+drop_ema_distance,4,2.5180759170059397,127.53963324117646,-12.39400107673464,0.75,2.5180759170059397,-12.39400107673464,unreliable
+drop_candle_structure,3,,214.17328125837125,68.93978606849552,1.0,0.0,68.93978606849552,unreliable

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from threading import RLock
 
 from fix_engine.economics_store import EconomicsStore
-from fix_engine.market_data.models import MarketData
+from fix_engine.data.models import MarketData
 
 
 class FillAdverseSelectionTracker:

@@ -44,6 +44,16 @@ fix_engine/settings.runtime.cfg
 .DS_Store
 Thumbs.db
 
+# Research outputs (regenerated)
+research_output/
+research_batch_frames/
+_tmp_research*/
+_tmp_smoke*/
+# Optional: local duplicate batch dumps (keep canonical history_*.csv; uncomment if needed)
+# fix_engine/backtest/strategy_run_*/
+# fix_engine/backtest/quant_batch_*/
+# fix_engine/backtest/research_batch_*/
+
 # Runtime / local artifacts (regenerated on run)
 fix_engine/log/
 fix_engine/store/

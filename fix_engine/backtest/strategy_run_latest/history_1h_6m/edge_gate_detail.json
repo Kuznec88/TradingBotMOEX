@@ -1,0 +1,21 @@
+{
+  "sample_metrics": {
+    "n": 2,
+    "expectancy": -79.05083810523018,
+    "expectancy_decomposition": {
+      "n": 2.0,
+      "winrate": 0.0,
+      "avg_win": 0.0,
+      "avg_loss": -79.05083810523018,
+      "expectancy_from_components": -79.05083810523018,
+      "mean_pnl": -79.05083810523018
+    },
+    "profit_factor": 0.0,
+    "pnl_wo_top1": -81.64515211900128,
+    "winrate": 0.0,
+    "sum_pnl": -158.10167621046037
+  },
+  "reasons": [
+    "n_lt_min_trades"
+  ]
+}

@@ -1,0 +1,7 @@
+# Copy and edit; run from repo root:
+#   python -m quant.research.run_pipeline --manifest fix_engine/backtest/research_pipeline_manifest.example.yaml --out-dir research_batch
+csvs:
+  - path: fix_engine/backtest/history_1h_6m.csv
+    instrument: primary_1h
+  - path: fix_engine/backtest/history_5m_6m.csv
+    instrument: primary_5m
