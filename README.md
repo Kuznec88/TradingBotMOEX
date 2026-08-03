@@ -1,146 +1,118 @@
-# TradingBotMOEX — execution engine + quantitative research
+# TradingBotMOEX — Quantitative Research & Execution Experiment
 
-## Layout
+> **Note on this project:** This is a personal, AI-assisted ("vibe-coded") experiment built to explore quantitative trading research workflows on MOEX data — not a production trading system and not investment advice. I used it to practice structuring a research pipeline (feature engineering, statistical validation, backtesting) end-to-end, leaning heavily on AI pair-programming to move fast and iterate on ideas. Expect rough edges; the value of the project is in the pipeline design and the falsification-first research process, not in polished production code.
+
+## What this is
+
+A research + backtesting sandbox for short-term systematic strategies on MOEX instruments, built around one core principle: **the default expected outcome is "no edge found."** The pipeline is designed to falsify trading ideas rather than curve-fit them — thresholds and gates exist specifically so that a negative result is a valid, reportable outcome instead of something to tune away.
+
+The repo has two halves:
+- **`fix_engine/`** — the live/backtest execution layer (strategy variants, order execution contract; not modified by research changes unless explicitly wired in).
+- **`quant/`** — the research stack: data enrichment, feature engineering (three generations of alpha factors), statistical analysis, model probes, and a CLI-driven pipeline that ties it all together.
+
+## Repository layout
 
 | Path | Purpose |
-|------|---------|
-| `fix_engine/` | Live/backtest strategy (breakout + retest + v2 ensemble), execution (unchanged contract) |
-| `quant/core/` | Constants, logging (`configure_logging`, INFO default) |
-| `quant/data/` | OHLCV enrichment, trade-level dataset (no lookahead at entry) |
-| `quant/features/` | `alpha_*` v1 → `alpha_v2_*` → `alpha_v3_*` (chained in `attach_alpha_features`) |
-| `quant/models/` | Sklearn / GBM edge probes (time-series CV) |
-| `quant/research/` | Pipeline CLI, factor stats, pairwise + triple interactions, bootstrap, cross-instrument table |
-| `quant/backtest/` | Thin facade: `run_backtest_v2`, `attach_alpha_features` |
-| `cli/` | `python -m cli.research` → research pipeline |
+|---|---|
+| `fix_engine/` | Live/backtest strategy variants (breakout + retest + ensemble) and execution logic |
+| `quant/core/` | Shared constants and logging setup |
+| `quant/data/` | OHLCV enrichment and trade-level dataset construction (no lookahead at entry) |
+| `quant/features/` | Three generations of engineered features (`alpha_*` → `alpha_v2_*` → `alpha_v3_*`), chained via `attach_alpha_features` |
+| `quant/models/` | Sklearn / GBM edge probes with time-series cross-validation |
+| `quant/research/` | Pipeline CLI, factor statistics, pairwise/triple interaction analysis, bootstrap validation, cross-instrument comparison |
+| `quant/backtest/` | Thin facade over `run_backtest_v2` and `attach_alpha_features` |
+| `cli/` | Entry point: `python -m cli.research` |
 
-## Research workflow (falsification-first)
+Design notes and phase-by-phase criteria live in `docs/research_roadmap.md`; the walk-forward validation approach is documented separately in `docs/walk_forward_spec.md`.
 
-The default outcome is **“no edge found”**. That is a valid, useful result — do not tune thresholds to force a pass.
+## Research philosophy
 
-**Roadmap (phases, criteria, repo hygiene):** [docs/research_roadmap.md](docs/research_roadmap.md).
+- **Falsification first.** A clean "this doesn't work" result is treated as useful output, not a failure to fix.
+- **No lookahead.** All features are computed at bar close and attached to trades at `entry_bar` only.
+- **Configurable, not hidden, thresholds.** The profit-factor gate (`--edge-min-pf`, default 1.2) and walk-forward bucket count (`--walk-forward-buckets`, default 4) are explicit CLI flags rather than buried constants.
 
-Edge gate profit factor threshold is configurable: `--edge-min-pf` (default `1.2`; use `1.3` for stricter checks aligned with that doc).
+### Edge gate (PnL-aware)
 
-Walk-forward **trade buckets** (stability of PF/expectancy over time, no bar re-run): `--walk-forward-buckets N` (default `4`, `0` off). Details: [docs/walk_forward_spec.md](docs/walk_forward_spec.md).
+A result only passes the gate if **all** of the following hold:
+- at least 30 trades
+- positive expectancy (mean PnL)
+- profit factor above 1.2
+- PnL remains positive even excluding the single best trade
 
-### Data (roughly 6+ months of bars)
+...**and** either at least two statistically stable factors (|Spearman| ≥ 0.15, sign-consistent across train/test) or at least one qualifying pairwise/triple factor interaction under the same filters. Below 30 trades, the pipeline flags the run as unreliable rather than reporting a false pass.
 
-Use long **`history_*.csv`** (T-Invest OHLCV), not short `_hist*.csv` samples.
+## Feature generations
 
-1. Put `TBankSandboxToken` and `TBankInstrumentId` in `fix_engine/settings.local.cfg` (see `settings.cfg`).
-2. Fetch ~183 days:
+- **v1 (`alpha_*`):** liquidity sweeps, ATR ratios, rolling volatility percentile, compression/expansion patterns, session/hour buckets, wick-to-body ratios, Donchian range position.
+- **v2 (`alpha_v2_*`):** false-breakout strength, short-horizon return normalized by ATR, volatility regime tertiles, Donchian distance in ATR units, rolling z-score, cyclical hour encoding.
+- **v3 (`alpha_v3_*`):** finer-grained fail-break patterns, shorter-horizon normalized returns, true-range percentile, tighter Donchian distances, local high/low distance, explicit candle-shadow and body-ratio features, pin-bar scoring.
+
+## Multi-timeframe context (1h + 4h)
+
+Indicators combine a 1-hour primary and 4-hour secondary timeframe. By default, both live and research modes require only one of the two timeframes to confirm (`htf_dual_require_both=False`) — requiring both leaves too few trades on lower timeframes to evaluate. Both timeframes feed into `htf_pv_quality`, a 0–1 price-volume quality score (duplicated as `alpha_htf_pv_quality` in research output).
+
+## Data
+
+Research runs expect several months of OHLCV history (long `history_*.csv` files, not the short sample files). Fetching data requires a T-Invest sandbox token and instrument ID, configured locally (not committed):
 
 ```bash
+# Fetch a full research bundle (~183 days) across configured instruments
 python -m fix_engine.tools.fetch_research_bundle --config fix_engine/backtest/research_instruments.yaml
-```
 
-Or one series:
-
-```bash
+# Or fetch a single series
 python -m fix_engine.tools.fetch_tbank_candles_history --interval 1h --days 183 --out fix_engine/backtest/history_1h_6m.csv
+
+# 4-hour candles with volume, for HTF context
+python -m fix_engine.tools.fetch_tbank_candles_history --interval 4h --days 400 --out fix_engine/backtest/history_4h.csv
 ```
 
-### Running the pipeline
+## Running the pipeline
 
 ```bash
 # Single CSV → flat output folder
 python -m quant.research.run_pipeline --csv fix_engine/backtest/history_1h_6m.csv --out-dir research_output
 
-# All history_*.csv in a directory (subfolder per stem)
+# Every history_*.csv in a directory (one subfolder per file)
 python -m quant.research.run_pipeline --batch-dir fix_engine/backtest --out-dir research_batch
 
-# Glob under a directory
+# Glob pattern under a directory
 python -m quant.research.run_pipeline --batch-dir fix_engine/backtest --glob "history_1h*.csv" --out-dir research_batch
 
-# YAML manifest (paths relative to repo root or absolute)
+# YAML manifest of multiple datasets
 python -m quant.research.run_pipeline --manifest fix_engine/backtest/research_pipeline_manifest.example.yaml --out-dir research_batch
 ```
 
-Same entrypoints:
+Equivalent entry points: `python -m cli.research ...`. The older `python -m research` still works but prints a deprecation notice pointing to `quant.research.run_pipeline` / `cli.research`.
 
-```bash
-python -m cli.research --csv path/to/data.csv --out-dir research_output
-python -m quant
-```
-
-`python -m research` prints a deprecation message — use `quant.research.run_pipeline` or `cli.research`.
-
-### HTF 1h + 4h и объём (T-Invest SDK)
-
-- В **`compute_indicators`** по умолчанию: primary **`1h`**, secondary **`4h`**. В live по умолчанию **`htf_dual_require_both=False`** (OR по ТФ); в research то же в `get_enriched_ohlcv`, иначе на младших ТФ почти нет сделок. Оба ТФ участвуют в `htf_entry_*` и в **price–volume quality** на HTF.
-- Колонки: `htf_pv_quality` (0..1), в research дублируется как **`alpha_htf_pv_quality`**.
-- Исторические свечи с объёмом: `python -m fix_engine.tools.fetch_tbank_candles_history --interval 4h --days 400 --out ...` (SDK: `CANDLE_INTERVAL_4_HOUR`; объём в CSV уже есть).
-
-### Feature sets (entry-time only)
-
-All features are computed at bar close; trade rows attach values at `entry_bar` (no lookahead).
-
-- **v1 (`alpha_*`)**: liquidity sweep vs prior bar, ATR short/long ratio, rolling vol percentile, compression / expand-after-compress, hour/session buckets, wick/body ratios, Donchian range position (20).
-- **v2 (`alpha_v2_*`)**: false-breakout strength (pierce + failure), 3-bar return vs ATR, volatility regime tertiles, Donchian 20 distance in ATR, z-score (50-bar), hour sin/cos, finer session bucket.
-- **v3 (`alpha_v3_*`)**: 2-bar fail-break pattern, 5-bar return vs ATR, true-range vs ATR percentile, Donchian 10 distances, z-score (20-bar), minute-of-day, local high/low distance (50-bar), position in 30-bar range, explicit upper/lower shadow fractions, signed body ratio, pin-bar score.
-
-### Outputs (per run)
+## Output artifacts
 
 | Artifact | Description |
-|----------|-------------|
-| `trades_dataset.csv` | Trades with `raw_*`, `alpha_*`, `alpha_v2_*`, `alpha_v3_*` at entry |
-| `factor_analysis.csv` | Pearson/Spearman, quantile bins (avg PnL, PF, winrate, pnl_wo_top1), monotonicity, train/test stability |
-| `factor_bins_detail.csv`, `factor_summary.json` | Long-form bin tables |
-| `ablation_results.csv` | Leave-one-legacy-factor-out on signal score (renormalized weights) |
-| `interactions.csv` | Pairwise median splits (min trades, PF>1.2, pnl wo top-1 > 0) |
-| `interactions_triple.csv` | Triple-median splits (8 octants; capped at first 8 factors for speed) |
-| `model_metrics.json` | Logistic, Ridge, RF, GBM (+ LightGBM if installed) |
-| `pnl_estimate.json` | Sample metrics, **expectancy decomposition**, bootstrap, holdout, 6M extrapolation; **`pnl_convention`**: все суммы в **₽ на 1 контракт**; опционально **`target_6m_sizing`** (по умолчанию цель **40 000 ₽ на счёт / 6 мес.** при **50** контрактах → **800 ₽ / контракт / 6 мес.**) — множитель к `qty=1` в research |
-| `edge_gate_detail.json` | PnL-aware gate reasons |
-| `final_conclusion.txt` | Human-readable summary |
+|---|---|
+| `trades_dataset.csv` | Every trade with raw, v1, v2, and v3 features at entry |
+| `factor_analysis.csv` | Pearson/Spearman correlations, quantile-bin performance, monotonicity, train/test stability |
+| `factor_bins_detail.csv`, `factor_summary.json` | Long-form bin-level detail |
+| `ablation_results.csv` | Leave-one-factor-out impact on the composite signal score |
+| `interactions.csv` / `interactions_triple.csv` | Pairwise and triple-factor median-split analysis |
+| `model_metrics.json` | Logistic regression, Ridge, Random Forest, GBM (plus LightGBM if installed) |
+| `pnl_estimate.json` | Sample metrics, expectancy decomposition, bootstrap and holdout results, 6-month extrapolation |
+| `edge_gate_detail.json` | Reasoning behind the PnL-aware gate decision |
+| `final_conclusion.txt` | Plain-language summary of the run |
 
-**Единицы PnL:** 1 в колонке `pnl` = **1 ₽ на 1 контракт** (бэктест `qty=1`). Итог на счёте при плоском размере **N** контрактов ≈ **PnL × N**. CLI: `--target-6m-account-rub 40000 --planned-contracts 50` (или `--target-6m-per-contract-rub 800`); `0` на account — выключить блок sizing.
+Batch/manifest runs additionally produce `batch_summary.csv`, `batch_summary_metrics.csv`, and `batch_cross_instrument_factors.csv` (a cross-instrument pivot of factor correlations).
 
-Batch-only (multi-CSV / manifest):
+All PnL figures are per one contract (`qty=1`); scale by planned contract count to estimate account-level results. Sizing targets can be set via `--target-6m-account-rub` and `--planned-contracts`, or directly via `--target-6m-per-contract-rub` (set to 0 to disable).
 
-| Artifact | Description |
-|----------|-------------|
-| `batch_summary.csv`, `batch_summary_metrics.csv` | Per-frame PnL / winrate / edge |
-| `batch_cross_instrument_factors.csv` | Pivot of `spearman_pnl` by factor × instrument + cross-section std/mean |
+## Strategy defaults
 
-### Edge gate (PnL-aware)
+Backtests score signals with a unified `signal_score` (weights defined in `fix_engine/strategy/signal_scoring.py`), combined with a no-lookahead context-quality multiplier derived from session, compression, and volatility-regime features. By default, entries with context quality below 0.84 are hard-rejected, and continuation entries are disabled. Use `--no-score-filter` to disable score-based filtering or `--enable-continuation` to re-enable continuation entries.
 
-All of the following must hold:
-
-- `n ≥ 30` trades  
-- **Expectancy** > 0 (mean PnL)  
-- **Profit factor** > 1.2  
-- **PnL without top-1 trade** > 0  
-
-and **either** ≥ 2 stable factors (|Spearman| ≥ 0.15, sign-consistent train/test, stability) **or** at least one qualifying row in **pairwise or triple** interactions (same PF / pnl_wo_top1 filters).
-
-If `n < 30`, the pipeline logs a **WARNING** and marks results as unreliable.
-
-### Tests
+## Tests
 
 ```bash
+pip install -r requirements.txt   # includes pytest>=7; lightgbm optional, for extra feature importance
 pytest tests/
 ```
 
-### Requirements
+## Scope note
 
-```bash
-pip install -r requirements.txt
-```
-
-Includes `pytest>=7`. Optional: `lightgbm` for an extra feature-importance block.
-
-## Strategy defaults (research / `quant.data.pipeline`)
-
-Backtests use **unified `signal_score`** with:
-
-- **Weights** emphasizing impulse + retest speed (see `SignalScoreWeights` in `fix_engine/strategy/signal_scoring.py`).
-- **Context multiplier** `entry_context_quality(row)` from `alpha_*` (session, compression, vol regime) — no lookahead.
-- Optional **hard reject** if context quality &lt; 0.84 (with alpha columns present).
-- **`min_score`** default **0.52**, **continuation entries off** by default; HTF **1h+4h** включены в `get_enriched_ohlcv` с `htf_dual_require_both=False` (иначе на 5m/15m почти нет сделок).
-
-CLI: `--no-score-filter` restores the old “all intents pass” behaviour; `--enable-continuation` turns continuation back on.
-
-## Production
-
-Live trading stays under `fix_engine/`. Research modules do not change live paths unless you explicitly wire them.
+Live trading logic under `fix_engine/` is intentionally decoupled from the research stack — research changes don't affect live behavior unless explicitly wired in. This project has not been run with real capital and is shared purely as a research/engineering sample.
