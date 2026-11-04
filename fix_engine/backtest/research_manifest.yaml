@@ -34,11 +34,6 @@ datasets:
     csv: fix_engine/backtest/history_1h_12m.csv
     htf_resample_rule: ""
 
-  - run_id: sber_1h_24m_nohtf
-    instrument_label: primary_cfg
-    csv: fix_engine/backtest/history_1h_24m.csv
-    htf_resample_rule: ""
-
   # Пример второго тикера: раскомментируйте после fetch с --instrument-id
   # - run_id: alt_1h_6m_nohtf
   #   instrument_label: other_uid

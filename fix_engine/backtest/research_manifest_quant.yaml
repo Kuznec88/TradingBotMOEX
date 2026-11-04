@@ -117,11 +117,6 @@ datasets:
     csv: fix_engine/backtest/history_1h_12m.csv
     htf_resample_rule: ""
 
-  - run_id: strict_1h_24m_nohtf
-    instrument_label: primary
-    csv: fix_engine/backtest/history_1h_24m.csv
-    htf_resample_rule: ""
-
   # --- 1h baseline чуть шире ретест (контроль: не ломает ли структуру) ---
   - run_id: relax_1h_nohtf_retest8
     instrument_label: primary

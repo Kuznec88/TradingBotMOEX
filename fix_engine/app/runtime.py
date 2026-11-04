@@ -1,15 +1,9 @@
 from __future__ import annotations
 
 import logging
-import math
-import os
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import RLock
 from typing import IO, Literal, TextIO, cast
 
-from fix_engine.analytics_api import TradingAnalyticsAPI
 from fix_engine.config.settings import (
     read_bool_merged as _read_bool,
     read_default_optional_setting_merged as _read_default_optional_setting,
@@ -18,14 +12,11 @@ from fix_engine.config.settings import (
     read_int_merged as _read_int,
     read_str_merged as _read_str,
 )
-from fix_engine.economics_store import EconomicsStore
 from fix_engine.data.engine import MarketDataEngine
-from fix_engine.data.models import MarketData
 from fix_engine.execution.gateway import ExecutionGateway
 from fix_engine.execution.noop_engine import NoopExecutionEngine
 from fix_engine.failure_monitor import FailureMonitor
 from fix_engine.strategy.swing_live_runner import SwingLiveRunner
-from fix_engine.metrics.adverse_selection import FillAdverseSelectionTracker
 from fix_engine.metrics.logging_setup import setup_logging
 from fix_engine.order_manager import OrderManager
 from fix_engine.order_models import MarketType
@@ -33,16 +24,6 @@ from fix_engine.position_manager import PositionManager
 from fix_engine.quote_history_store import QuoteHistoryStore
 from fix_engine.risk.manager import RiskManager
 from fix_engine.structured_logging import StructuredLoggingRuntime
-from fix_engine.broker_fee_model import BrokerFeeCalculator
-from fix_engine.unit_economics import UnitEconomicsCalculator, _d
-
-
-def _format_fix_for_log(raw_fix: str) -> str:
-    return raw_fix.replace("\x01", "|")
-
-
-def _source_to_market(source: str) -> MarketType:
-    return MarketType.FORTS if source == "FORTS" else MarketType.EQUITIES
 
 
 def _acquire_runtime_lock(base_dir: Path, logger: logging.Logger) -> TextIO | None | Literal[False]:
@@ -126,46 +107,6 @@ def _run_locked(
             sample_interval_ms=quote_history_sample_ms,
         )
 
-    economics_store = EconomicsStore(base_dir / "trade_economics.db")
-    analytics_api = TradingAnalyticsAPI(economics_store)
-    adverse_tracker = FillAdverseSelectionTracker(economics_store)
-
-    fee_equities_bps = _read_float(base_dir, "FeesBpsEquities", 4.0)
-    fee_forts_bps = _read_float(base_dir, "FeesBpsForts", 0.0)
-    fee_fixed_equities = _read_float(base_dir, "FeesFixedEquities", 0.0)
-    fee_fixed_forts = _read_float(base_dir, "FeesFixedForts", 0.0)
-    use_broker_fee_model = _read_bool(base_dir, "BrokerFeeModelEnabled", True)
-    broker_fee_model: BrokerFeeCalculator | None = None
-    if use_broker_fee_model:
-        t1_rub = _read_float(base_dir, "FeesFortsTier1EndRub", 12_000_000.0)
-        t2_rub = _read_float(base_dir, "FeesFortsTier2EndRub", 17_000_000.0)
-        r1_bps = _read_float(base_dir, "FeesFortsTier1Bps", 2.5)
-        r2_bps = _read_float(base_dir, "FeesFortsTier2Bps", 2.0)
-        r3_bps = _read_float(base_dir, "FeesFortsTier3Bps", 1.5)
-        broker_fee_model = BrokerFeeCalculator(
-            equities_bps=_d(fee_equities_bps),
-            forts_flat_bps=_d(fee_forts_bps),
-            fixed_equities=_d(fee_fixed_equities),
-            fixed_forts=_d(fee_fixed_forts),
-            forts_tiered=_read_bool(base_dir, "FeesFortsTiered", True),
-            forts_tier1_end_rub=_d(t1_rub),
-            forts_tier2_end_rub=_d(t2_rub),
-            forts_tier1_rate=_d(r1_bps) / _d(10000),
-            forts_tier2_rate=_d(r2_bps) / _d(10000),
-            forts_tier3_rate=_d(r3_bps) / _d(10000),
-        )
-    economics = UnitEconomicsCalculator(
-        fee_bps_by_market={
-            MarketType.EQUITIES: _d(fee_equities_bps),
-            MarketType.FORTS: _d(fee_forts_bps),
-        },
-        fixed_fee_by_market={
-            MarketType.EQUITIES: _d(fee_fixed_equities),
-            MarketType.FORTS: _d(fee_fixed_forts),
-        },
-        broker_fee_calculator=broker_fee_model,
-    )
-
     risk_manager = RiskManager(
         order_manager=order_manager,
         max_exposure_per_instrument=_read_float(base_dir, "RiskMaxExposurePerInstrument", 1_000_000.0),
@@ -226,7 +167,7 @@ def _run_locked(
             raise RuntimeError("ExecutionMode=LIVE requires TBankInstrumentId (instrument UID).")
         sym = _read_str(base_dir, "TBankSymbol", "SBER").upper()
         tick_value = _read_default_optional_setting(base_dir, "tick_size")
-        mm_tick = float(tick_value) if tick_value else _read_float(base_dir, "MMTickSize", 0.01)
+        tick_size = float(tick_value) if tick_value else _read_float(base_dir, "MMTickSize", 0.01)
         shares_per_lot = _read_int(base_dir, "TBankSharesPerLot", 1)
         use_sandbox_orders = _read_bool(base_dir, "TBankUseSandboxOrders", False)
         if use_sandbox_orders:
@@ -252,7 +193,7 @@ def _run_locked(
             trading_account_equities=account_eq,
             trading_account_forts=account_fo,
             shares_per_lot=shares_per_lot,
-            tick_size=mm_tick,
+            tick_size=tick_size,
             use_sandbox_orders=use_sandbox_orders,
         )
         logger.info(
@@ -302,18 +243,13 @@ def _run_locked(
     if quote_store is not None:
         market_data_engine.subscribe(quote_store.on_market_data)
     market_data_engine.subscribe(gateway.on_market_data)
-    market_data_engine.subscribe(
-        lambda data: economics.on_market_data(market=MarketType.EQUITIES, symbol=data.symbol, mid_price=_d(data.mid_price))
-    )
-    market_data_engine.subscribe(adverse_tracker.on_market_data)
-
-    mm_symbol = _read_str(base_dir, "TBankSymbol", "SBER").upper()
+    symbol = _read_str(base_dir, "TBankSymbol", "SBER").upper()
     lot_value = _read_default_optional_setting(base_dir, "lot_size")
-    mm_lot = float(lot_value) if lot_value else _read_float(base_dir, "MarketMakingLotSize", 1.0)
-    mm_market_raw = (_read_default_optional_setting(base_dir, "market") or _read_str(base_dir, "MarketMakingMarket", "EQUITIES")).upper()
-    mm_market = MarketType(mm_market_raw) if mm_market_raw in {"EQUITIES", "FORTS"} else MarketType.EQUITIES
+    lot_size = float(lot_value) if lot_value else _read_float(base_dir, "MarketMakingLotSize", 1.0)
+    market_raw = (_read_default_optional_setting(base_dir, "market") or _read_str(base_dir, "MarketMakingMarket", "EQUITIES")).upper()
+    market = MarketType(market_raw) if market_raw in {"EQUITIES", "FORTS"} else MarketType.EQUITIES
     tick_value = _read_default_optional_setting(base_dir, "tick_size")
-    mm_tick = float(tick_value) if tick_value else _read_float(base_dir, "MMTickSize", 0.01)
+    tick_size = float(tick_value) if tick_value else _read_float(base_dir, "MMTickSize", 0.01)
 
     from fix_engine.strategy.swing_breakout import SwingBreakoutParams
     from fix_engine.data.preflight import load_sandbox_token
@@ -343,7 +279,7 @@ def _run_locked(
         take_profit_rub=_read_float(base_dir, "SwingTpRub", 200.0),
         stop_loss_rub=_read_float(base_dir, "SwingSlRub", 100.0),
         rub_per_point=_read_float(base_dir, "SwingRubPerPoint", 1.0),
-        tick_size=mm_tick,
+        tick_size=tick_size,
         slippage_ticks=_read_int(base_dir, "SwingSlippageTicks", 1),
         commission_rate=_read_float(base_dir, "SwingCommissionRate", 0.0004),
         notional_scale=_read_float(base_dir, "SwingNotionalScale", 1.0),
@@ -413,10 +349,10 @@ def _run_locked(
         base_dir=base_dir,
         gateway=gateway,
         logger=logger,
-        symbol=mm_symbol,
-        market=mm_market,
-        lot_size=mm_lot,
-        tick_size=mm_tick,
+        symbol=symbol,
+        market=market,
+        lot_size=lot_size,
+        tick_size=tick_size,
         params=swing_params,
         candle_interval=swing_interval,
         poll_interval_sec=_read_float(base_dir, "SwingPollIntervalSec", 30.0),
@@ -431,7 +367,7 @@ def _run_locked(
         "[RUNTIME] TradingStrategy=SWING_BREAKOUT interval=%s poll=%.1fs symbol=%s",
         swing_interval,
         _read_float(base_dir, "SwingPollIntervalSec", 30.0),
-        mm_symbol,
+        symbol,
     )
 
     if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:

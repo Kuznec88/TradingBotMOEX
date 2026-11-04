@@ -82,7 +82,7 @@ python -m quant.research.run_pipeline --batch-dir fix_engine/backtest --glob "hi
 python -m quant.research.run_pipeline --manifest fix_engine/backtest/research_pipeline_manifest.example.yaml --out-dir research_batch
 ```
 
-Equivalent entry points: `python -m cli.research ...`. The older `python -m research` still works but prints a deprecation notice pointing to `quant.research.run_pipeline` / `cli.research`.
+Equivalent entry point: `python -m cli.research ...`.
 
 ## Output artifacts
 

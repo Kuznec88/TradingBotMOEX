@@ -33,7 +33,6 @@ def run_tbank_paper_session(
     from fix_engine.data.preflight import load_sandbox_token, verify_market_data_readonly
     from fix_engine.data.tbank_stream import run_tbank_sandbox_market_data
     from fix_engine.tools.common_cfg_dir import TBANK_INVEST_GRPC_HOST_PROD
-    from fix_engine.tools.export_session_metrics import print_post_run_summary
 
     md_health: MdHealthMonitor | None = None
     if execution_mode not in {"PAPER_REAL_MARKET", "LIVE"}:
@@ -159,7 +158,3 @@ def run_tbank_paper_session(
             if callable(stop):
                 stop()
         logging_runtime.listener.stop()
-        try:
-            print_post_run_summary(base_dir)
-        except Exception as exc:
-            logger.warning("post_run_summary_failed: %s", exc)
