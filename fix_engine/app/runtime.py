@@ -24,7 +24,6 @@ from fix_engine.data.models import MarketData
 from fix_engine.execution.gateway import ExecutionGateway
 from fix_engine.execution.noop_engine import NoopExecutionEngine
 from fix_engine.failure_monitor import FailureMonitor
-from fix_engine.strategy.momentum_mm import BasicMarketMaker
 from fix_engine.strategy.swing_live_runner import SwingLiveRunner
 from fix_engine.metrics.adverse_selection import FillAdverseSelectionTracker
 from fix_engine.metrics.logging_setup import setup_logging
@@ -190,7 +189,6 @@ def _run_locked(
     )
 
     failure_monitor: FailureMonitor | None = None
-    market_maker: BasicMarketMaker | None = None
     swing_runner: SwingLiveRunner | None = None
 
     def on_execution_report(message: object, source: str) -> None:
@@ -199,8 +197,6 @@ def _run_locked(
         state = order_manager.on_execution_report(message)
         if swing_runner is not None:
             swing_runner.on_execution_report(state)
-        if market_maker is not None:
-            market_maker.on_execution_report(state)
         _ = source  # reserved for future per-source handling
 
     tbank_broker = None
@@ -311,7 +307,6 @@ def _run_locked(
     )
     market_data_engine.subscribe(adverse_tracker.on_market_data)
 
-    trading_strategy = _read_str(base_dir, "TradingStrategy", "SWING_BREAKOUT").strip().upper()
     mm_symbol = _read_str(base_dir, "TBankSymbol", "SBER").upper()
     lot_value = _read_default_optional_setting(base_dir, "lot_size")
     mm_lot = float(lot_value) if lot_value else _read_float(base_dir, "MarketMakingLotSize", 1.0)
@@ -320,223 +315,124 @@ def _run_locked(
     tick_value = _read_default_optional_setting(base_dir, "tick_size")
     mm_tick = float(tick_value) if tick_value else _read_float(base_dir, "MMTickSize", 0.01)
 
-    if trading_strategy == "MOMENTUM_MM":
-        market_maker = BasicMarketMaker(
-            symbol=mm_symbol,
-            lot_size=mm_lot,
-            market=mm_market,
-            gateway=gateway,
-            position_manager=position_manager,
-            logger=logger,
-            tick_size=mm_tick,
-            strategy_mode=_read_str(base_dir, "strategy_mode", "SAFE").upper(),
-            spread_threshold=_read_float(base_dir, "spread_threshold", 1.0),
-            max_spread=_read_float(base_dir, "max_spread", 5.0),
-            dynamic_spread_enabled=_read_bool(base_dir, "dynamic_spread_enabled", True),
-            dynamic_spread_window_ticks=_read_int(base_dir, "dynamic_spread_window_ticks", 200),
-            dynamic_spread_mult=_read_float(base_dir, "dynamic_spread_mult", 1.5),
-            move_threshold=_read_float(base_dir, "move_threshold", 0.0),
-            velocity_threshold=_read_float(base_dir, "velocity_threshold", 0.0),
-            delta_threshold=_read_float(base_dir, "delta_threshold", 1.0),
-            normalized_delta_threshold=_read_float(base_dir, "normalized_delta_threshold", 0.0),
-            score_threshold=_read_float(base_dir, "score_threshold", 0.72),
-            w_spread=_read_float(base_dir, "w_spread", 0.30),
-            w_delta=_read_float(base_dir, "w_delta", 0.70),
-            penalty_wide_spread=_read_float(base_dir, "penalty_wide_spread", 0.25),
-            penalty_low_delta=_read_float(base_dir, "penalty_low_delta", 0.25),
-            position_sizing_enabled=_read_bool(base_dir, "PositionSizingEnabled", True),
-            sizing_risk_per_trade_abs=_read_float(base_dir, "SizingRiskPerTradeAbs", 8.0),
-            sizing_stop_loss_ticks=_read_float(base_dir, "SizingStopLossTicks", 4.0),
-            sizing_min_qty=_read_float(base_dir, "SizingMinQty", 1.0),
-            sizing_max_qty=_read_float(base_dir, "SizingMaxQty", mm_lot),
-            risk_manager=risk_manager,
-            no_trade_fallback_minutes=_read_float(base_dir, "no_trade_fallback_minutes", 3.0),
-            fallback_relax_step=_read_float(base_dir, "fallback_relax_step", 0.85),
-            fallback_min_delta=_read_float(base_dir, "fallback_min_delta", 0.0),
-            fallback_min_score=_read_float(base_dir, "fallback_min_score", 0.10),
-            fallback_max_spread=_read_float(base_dir, "fallback_max_spread", 8.0),
-            metrics_log_every=_read_int(base_dir, "metrics_log_every", 200),
-            cooldown_ms=_read_int(base_dir, "cooldown_ms", 1200),
-            flat_filter_window_sec=_read_float(base_dir, "FlatFilterWindowSec", 10.0),
-            flat_threshold_points=_read_float(base_dir, "FlatThresholdPoints", 5.0),
-            volatility_filter_window_sec=_read_float(base_dir, "VolatilityFilterWindowSec", 3.0),
-            volatility_max_range_points=_read_float(base_dir, "VolatilityMaxRangePoints", 25.0),
-            max_trades_per_min=_read_int(base_dir, "MaxTradesPerMin", 3),
-            entry_cooldown_seconds=_read_float(base_dir, "EntryCooldownSeconds", 20.0),
-            kill_zone_n=_read_int(base_dir, "KillZoneN", 5),
-            kill_zone_stop_threshold=_read_int(base_dir, "KillZoneStopThreshold", 2),
-            kill_zone_pause_seconds=_read_float(base_dir, "KillZonePauseSeconds", 180.0),
-            kill_zone_pause_2_sec=_read_float(base_dir, "KillZonePause2Sec", 60.0),
-            kill_zone_pause_3_sec=_read_float(base_dir, "KillZonePause3Sec", 120.0),
-            kill_zone_consecutive_only=_read_bool(base_dir, "KillZoneConsecutiveOnly", True),
-            entry_skip_log_throttle_sec=_read_float(base_dir, "EntrySkipLogThrottleSec", 0.5),
-            strict_entry_enabled=_read_bool(base_dir, "StrictEntryEnabled", False),
-            strict_spread_max_ticks=_read_float(base_dir, "StrictSpreadMaxTicks", 1.0),
-            strong_imbalance_high_min=_read_float(base_dir, "StrongImbalanceHighMin", 0.75),
-            strong_imbalance_med_min=_read_float(base_dir, "StrongImbalanceMedMin", 0.60),
-            strict_delta_score_min=_read_float(base_dir, "StrictDeltaScoreMin", 0.70),
-            strict_delta_score_med=_read_float(base_dir, "StrictDeltaScoreMed", 0.90),
-            strict_min_trend_ticks=_read_float(base_dir, "StrictMinTrendTicks", 0.50),
-            delta_spike_threshold=_read_float(base_dir, "DeltaSpikeThreshold", 300.0),
-            continuation_ticks=_read_int(base_dir, "ContinuationTicks", 3),
-            continuation_small_drop=_read_float(base_dir, "ContinuationSmallDrop", 25.0),
-            trend_align_score_boost=_read_float(base_dir, "TrendAlignScoreBoost", 0.05),
-            exit_on_score_enabled=_read_bool(base_dir, "exit_on_score_enabled", False),
-            exit_threshold=_read_float(base_dir, "exit_threshold", 0.0),
-            max_holding_sec=_read_float(base_dir, "max_holding_sec", 0.0),
-            max_exit_spread=_read_float(base_dir, "max_exit_spread", 0.0) or None,
-            force_time_exit_enabled=_read_bool(base_dir, "force_time_exit_enabled", False),
-            force_time_exit_after_sec=_read_float(base_dir, "force_time_exit_after_sec", 0.0),
-            min_entry_spread=_read_float(base_dir, "min_entry_spread", 1.0),
-            max_entry_spread=_read_float(base_dir, "max_entry_spread", 3.0),
-            entry_imbalance_threshold=_read_float(base_dir, "imbalance_threshold", 0.2),
-            entry_imbalance_threshold_long=_read_float(
-                base_dir, "imbalance_threshold_long", _read_float(base_dir, "imbalance_threshold", 0.2)
-            ),
-            entry_imbalance_threshold_short=_read_float(
-                base_dir, "imbalance_threshold_short", _read_float(base_dir, "imbalance_threshold", 0.2)
-            ),
-            min_abs_imbalance=_read_float(base_dir, "min_abs_imbalance", 0.1),
-            trend_lookback_ticks=_read_int(base_dir, "trend_lookback_ticks", 8),
-            min_trend_move_ticks=_read_float(base_dir, "min_trend_move_ticks", 1.0),
-            take_profit_ticks=_read_float(base_dir, "take_profit_ticks", 2.0),
-            stop_loss_ticks=_read_float(base_dir, "stop_loss_ticks", 1.0),
-            stop_loss_min_hold_bars=_read_int(base_dir, "stop_loss_min_hold_bars", 2),
-            stop_loss_min_age_ms=_read_float(base_dir, "stop_loss_min_age_ms", 400.0),
-            trailing_start_ticks=_read_float(base_dir, "trailing_start_ticks", 2.0),
-            trailing_gap_ticks=_read_float(base_dir, "trailing_gap_ticks", 1.0),
-            exit_imbalance_reversal=_read_float(base_dir, "exit_imbalance_reversal", 0.2),
-            flow_w_delta=_read_float(base_dir, "flow_w_delta", 0.45),
-            flow_w_imbalance=_read_float(base_dir, "flow_w_imbalance", 0.35),
-            flow_w_trend=_read_float(base_dir, "flow_w_trend", 0.20),
-            flow_decay_exit_threshold=_read_float(base_dir, "flow_decay_exit_threshold", 0.40),
-            flow_decay_hold_threshold=_read_float(base_dir, "flow_decay_hold_threshold", 0.80),
-            flow_decay_tp_disable_pnl_ticks=_read_float(base_dir, "flow_decay_tp_disable_pnl_ticks", 1.0),
-            one_position_only=_read_bool(base_dir, "one_position_only", _read_bool(base_dir, "MMOnePositionOnly", True)),
-            entry_decision_sink=economics_store.insert_entry_decisions,
-            economics_store=economics_store,
-        )
-        market_data_engine.subscribe(market_maker.on_market_data)
-        logger.info("[RUNTIME] TradingStrategy=MOMENTUM_MM (orderbook/tick MM)")
-    else:
-        from fix_engine.strategy.swing_breakout import SwingBreakoutParams
-        from fix_engine.data.preflight import load_sandbox_token
-        from fix_engine.tools.common_cfg_dir import TBANK_INVEST_GRPC_HOST_PROD
+    from fix_engine.strategy.swing_breakout import SwingBreakoutParams
+    from fix_engine.data.preflight import load_sandbox_token
+    from fix_engine.tools.common_cfg_dir import TBANK_INVEST_GRPC_HOST_PROD
 
-        tok = str(load_sandbox_token(base_dir) or "").strip()
-        if not tok:
-            raise RuntimeError(
-                "TradingStrategy=SWING_BREAKOUT requires TBankSandboxToken in settings.local.cfg."
-            )
-        inst = _read_str(base_dir, "TBankInstrumentId", "").strip()
-        if not inst:
-            raise RuntimeError("SWING_BREAKOUT requires TBankInstrumentId")
-        host = _read_str(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
-        swing_interval = _read_str(base_dir, "SwingCandleInterval", "15m").strip().lower()
-        if swing_interval not in {"5m", "15m"}:
-            raise RuntimeError(f"SwingCandleInterval must be 5m or 15m, got {swing_interval!r}")
+    tok = str(load_sandbox_token(base_dir) or "").strip()
+    if not tok:
+        raise RuntimeError(
+            "TradingStrategy=SWING_BREAKOUT requires TBankSandboxToken in settings.local.cfg."
+        )
+    inst = _read_str(base_dir, "TBankInstrumentId", "").strip()
+    if not inst:
+        raise RuntimeError("SWING_BREAKOUT requires TBankInstrumentId")
+    host = _read_str(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
+    swing_interval = _read_str(base_dir, "SwingCandleInterval", "15m").strip().lower()
+    if swing_interval not in {"5m", "15m"}:
+        raise RuntimeError(f"SwingCandleInterval must be 5m or 15m, got {swing_interval!r}")
 
-        swing_params = SwingBreakoutParams(
-            n_levels=_read_int(base_dir, "SwingNLevels", 20),
-            k_volume=_read_float(base_dir, "SwingKVolume", 1.5),
-            ma_period=_read_int(base_dir, "SwingMAPeriod", 50),
-            max_entry_spread_ticks=_read_float(base_dir, "SwingMaxEntrySpreadTicks", 2.0),
-            chop_window_bars=_read_int(base_dir, "SwingChopWindowBars", 5),
-            chop_max_range_ticks=_read_float(base_dir, "SwingChopMaxRangeTicks", 5.0),
-            signal_on_close_only=_read_bool(base_dir, "SwingSignalOnCloseOnly", True),
-            take_profit_rub=_read_float(base_dir, "SwingTpRub", 200.0),
-            stop_loss_rub=_read_float(base_dir, "SwingSlRub", 100.0),
-            rub_per_point=_read_float(base_dir, "SwingRubPerPoint", 1.0),
-            tick_size=mm_tick,
-            slippage_ticks=_read_int(base_dir, "SwingSlippageTicks", 1),
-            commission_rate=_read_float(base_dir, "SwingCommissionRate", 0.0004),
-            notional_scale=_read_float(base_dir, "SwingNotionalScale", 1.0),
-            trailing_activation_rub=_read_float(base_dir, "SwingTrailingActivationRub", 0.0),
-            trailing_gap_rub=_read_float(base_dir, "SwingTrailingGapRub", 50.0),
-            use_retest_fsm=_read_bool(base_dir, "SwingUseRetestFsm", True),
-            atr_period=_read_int(base_dir, "SwingAtrPeriod", 14),
-            atr_min_ticks=_read_float(base_dir, "SwingAtrMinTicks", 0.0),
-            atr_min_price=_read_float(base_dir, "SwingAtrMinPrice", 0.0),
-            retest_touch_epsilon_ticks=_read_float(base_dir, "SwingRetestTouchEpsilonTicks", 0.5),
-            retest_max_penetration_ticks=_read_float(base_dir, "SwingRetestMaxPenetrationTicks", 4.0),
-            volume_spike_required=_read_bool(base_dir, "SwingVolumeSpikeRequired", True),
-            volume_directional=_read_bool(base_dir, "SwingVolumeDirectional", True),
-            htf_resample_rule=_read_str(base_dir, "SwingHtfResampleRule", "1h").strip(),
-            htf_sma_period=_read_int(base_dir, "SwingHtfSmaPeriod", 100),
-            htf_hh_hl_lag=_read_int(base_dir, "SwingHtfHhHlLag", 3),
-            risk_reward_multiple=_read_float(base_dir, "SwingRiskRewardMultiple", 2.0),
-            stop_buffer_ticks=_read_float(base_dir, "SwingStopBufferTicks", 2.0),
-            trail_after_r_multiple=_read_float(base_dir, "SwingTrailAfterRMultiple", 1.0),
-            trail_gap_r_multiple=_read_float(base_dir, "SwingTrailGapRMultiple", 0.35),
-            commission_min_profit_mult=_read_float(base_dir, "SwingCommissionMinProfitMult", 2.0),
-            limit_order_timeout_bars=_read_int(base_dir, "SwingLimitOrderTimeoutBars", 4),
-            impulse_k=_read_float(base_dir, "SwingImpulseK", 0.35),
-            impulse_close_top_range_frac=_read_float(base_dir, "SwingImpulseCloseTopRangeFrac", 0.22),
-            impulse_body_vs_shadow=_read_bool(base_dir, "SwingImpulseBodyVsShadow", True),
-            retest_max_depth_ticks=_read_float(base_dir, "SwingRetestMaxDepthTicks", 10.0),
-            retest_max_bars=_read_int(base_dir, "SwingRetestMaxBars", 16),
-            retest_max_runaway_ticks=_read_float(base_dir, "SwingRetestMaxRunawayTicks", 120.0),
-            false_breakout_max_bars=_read_int(base_dir, "SwingFalseBreakoutMaxBars", 4),
-            htf_slope_lag=_read_int(base_dir, "SwingHtfSlopeLag", 5),
-            htf_min_slope_norm=_read_float(base_dir, "SwingHtfMinSlopeNorm", 0.03),
-            htf_overextended_atr_mult=_read_float(base_dir, "SwingHtfOverextendedAtrMult", 2.2),
-            htf_atr_period=_read_int(base_dir, "SwingHtfAtrPeriod", 14),
-            swing_session_tz=_read_str(base_dir, "SwingSessionTz", "Europe/Moscow"),
-            swing_trade_start_hhmm=_read_str(base_dir, "SwingTradeStartHhmm", "10:00"),
-            swing_trade_end_hhmm=_read_str(base_dir, "SwingTradeEndHhmm", "18:45"),
-            swing_lunch_skip=_read_bool(base_dir, "SwingLunchSkip", True),
-            swing_lunch_start_hhmm=_read_str(base_dir, "SwingLunchStartHhmm", "12:45"),
-            swing_lunch_end_hhmm=_read_str(base_dir, "SwingLunchEndHhmm", "13:45"),
-            adaptive_stop_atr_mult=_read_float(base_dir, "SwingAdaptiveStopAtrMult", 1.15),
-            partial_exit_fraction=_read_float(base_dir, "SwingPartialExitFraction", 0.5),
-            partial_exit_r_multiple=_read_float(base_dir, "SwingPartialExitRMultiple", 1.0),
-            partial_remainder_mode=(
-                "tp"
-                if _read_str(base_dir, "SwingPartialRemainderMode", "trail").strip().lower() == "tp"
-                else "trail"
-            ),
-            post_entry_time_stop_bars=_read_int(base_dir, "SwingPostEntryTimeStopBars", 0),
-            post_entry_time_stop_min_tp_progress=_read_float(base_dir, "SwingPostEntryTimeStopMinTpProgress", 0.12),
-            atr_slope_lag=_read_int(base_dir, "SwingAtrSlopeLag", 5),
-            min_atr_expansion=_read_float(base_dir, "SwingMinAtrExpansion", 1.08),
-            impulse_range_lookback=_read_int(base_dir, "SwingImpulseRangeLookback", 10),
-            impulse_strength=_read_float(base_dir, "SwingImpulseStrength", 1.35),
-            max_retest_bars_fast=_read_int(base_dir, "SwingMaxRetestBarsFast", 6),
-            min_range_atr_ratio=_read_float(base_dir, "SwingMinRangeAtrRatio", 2.5),
-            max_trades_per_day=_read_int(base_dir, "SwingMaxTradesPerDay", 5),
-            max_loss_streak=_read_int(base_dir, "SwingMaxLossStreak", 3),
-            loss_cooldown_bars=_read_int(base_dir, "SwingLossCooldownBars", 30),
-            use_market_on_strong_breakout=_read_bool(base_dir, "SwingUseMarketOnStrongBreakout", True),
-            market_impulse_mult=_read_float(base_dir, "SwingMarketImpulseMult", 1.12),
-            risk_per_trade_rub=_read_float(base_dir, "SwingRiskPerTradeRub", 0.0),
-            sizing_min_qty=_read_float(base_dir, "SwingSizingMinQty", 1.0),
-            sizing_max_qty=_read_float(base_dir, "SwingSizingMaxQty", 100.0),
-            trades_log_csv_path=_read_str(base_dir, "SwingTradesLogCsvPath", "").strip(),
-        )
-        swing_runner = SwingLiveRunner(
-            base_dir=base_dir,
-            gateway=gateway,
-            logger=logger,
-            symbol=mm_symbol,
-            market=mm_market,
-            lot_size=mm_lot,
-            tick_size=mm_tick,
-            params=swing_params,
-            candle_interval=swing_interval,
-            poll_interval_sec=_read_float(base_dir, "SwingPollIntervalSec", 30.0),
-            get_latest=market_data_engine.get_latest,
-            instrument_id=inst,
-            token=tok,
-            host=host.strip(),
-        )
-        swing_runner.start()
-        market_data_engine.subscribe(swing_runner.on_market_data)
-        logger.info(
-            "[RUNTIME] TradingStrategy=SWING_BREAKOUT interval=%s poll=%.1fs symbol=%s",
-            swing_interval,
-            _read_float(base_dir, "SwingPollIntervalSec", 30.0),
-            mm_symbol,
-        )
+    swing_params = SwingBreakoutParams(
+        n_levels=_read_int(base_dir, "SwingNLevels", 20),
+        k_volume=_read_float(base_dir, "SwingKVolume", 1.5),
+        ma_period=_read_int(base_dir, "SwingMAPeriod", 50),
+        max_entry_spread_ticks=_read_float(base_dir, "SwingMaxEntrySpreadTicks", 2.0),
+        chop_window_bars=_read_int(base_dir, "SwingChopWindowBars", 5),
+        chop_max_range_ticks=_read_float(base_dir, "SwingChopMaxRangeTicks", 5.0),
+        signal_on_close_only=_read_bool(base_dir, "SwingSignalOnCloseOnly", True),
+        take_profit_rub=_read_float(base_dir, "SwingTpRub", 200.0),
+        stop_loss_rub=_read_float(base_dir, "SwingSlRub", 100.0),
+        rub_per_point=_read_float(base_dir, "SwingRubPerPoint", 1.0),
+        tick_size=mm_tick,
+        slippage_ticks=_read_int(base_dir, "SwingSlippageTicks", 1),
+        commission_rate=_read_float(base_dir, "SwingCommissionRate", 0.0004),
+        notional_scale=_read_float(base_dir, "SwingNotionalScale", 1.0),
+        trailing_activation_rub=_read_float(base_dir, "SwingTrailingActivationRub", 0.0),
+        trailing_gap_rub=_read_float(base_dir, "SwingTrailingGapRub", 50.0),
+        use_retest_fsm=_read_bool(base_dir, "SwingUseRetestFsm", True),
+        atr_period=_read_int(base_dir, "SwingAtrPeriod", 14),
+        atr_min_ticks=_read_float(base_dir, "SwingAtrMinTicks", 0.0),
+        atr_min_price=_read_float(base_dir, "SwingAtrMinPrice", 0.0),
+        retest_touch_epsilon_ticks=_read_float(base_dir, "SwingRetestTouchEpsilonTicks", 0.5),
+        retest_max_penetration_ticks=_read_float(base_dir, "SwingRetestMaxPenetrationTicks", 4.0),
+        volume_spike_required=_read_bool(base_dir, "SwingVolumeSpikeRequired", True),
+        volume_directional=_read_bool(base_dir, "SwingVolumeDirectional", True),
+        htf_resample_rule=_read_str(base_dir, "SwingHtfResampleRule", "1h").strip(),
+        htf_sma_period=_read_int(base_dir, "SwingHtfSmaPeriod", 100),
+        htf_hh_hl_lag=_read_int(base_dir, "SwingHtfHhHlLag", 3),
+        risk_reward_multiple=_read_float(base_dir, "SwingRiskRewardMultiple", 2.0),
+        stop_buffer_ticks=_read_float(base_dir, "SwingStopBufferTicks", 2.0),
+        trail_after_r_multiple=_read_float(base_dir, "SwingTrailAfterRMultiple", 1.0),
+        trail_gap_r_multiple=_read_float(base_dir, "SwingTrailGapRMultiple", 0.35),
+        commission_min_profit_mult=_read_float(base_dir, "SwingCommissionMinProfitMult", 2.0),
+        limit_order_timeout_bars=_read_int(base_dir, "SwingLimitOrderTimeoutBars", 4),
+        impulse_k=_read_float(base_dir, "SwingImpulseK", 0.35),
+        impulse_close_top_range_frac=_read_float(base_dir, "SwingImpulseCloseTopRangeFrac", 0.22),
+        impulse_body_vs_shadow=_read_bool(base_dir, "SwingImpulseBodyVsShadow", True),
+        retest_max_depth_ticks=_read_float(base_dir, "SwingRetestMaxDepthTicks", 10.0),
+        retest_max_bars=_read_int(base_dir, "SwingRetestMaxBars", 16),
+        retest_max_runaway_ticks=_read_float(base_dir, "SwingRetestMaxRunawayTicks", 120.0),
+        false_breakout_max_bars=_read_int(base_dir, "SwingFalseBreakoutMaxBars", 4),
+        htf_slope_lag=_read_int(base_dir, "SwingHtfSlopeLag", 5),
+        htf_min_slope_norm=_read_float(base_dir, "SwingHtfMinSlopeNorm", 0.03),
+        htf_overextended_atr_mult=_read_float(base_dir, "SwingHtfOverextendedAtrMult", 2.2),
+        htf_atr_period=_read_int(base_dir, "SwingHtfAtrPeriod", 14),
+        swing_session_tz=_read_str(base_dir, "SwingSessionTz", "Europe/Moscow"),
+        swing_trade_start_hhmm=_read_str(base_dir, "SwingTradeStartHhmm", "10:00"),
+        swing_trade_end_hhmm=_read_str(base_dir, "SwingTradeEndHhmm", "18:45"),
+        swing_lunch_skip=_read_bool(base_dir, "SwingLunchSkip", True),
+        swing_lunch_start_hhmm=_read_str(base_dir, "SwingLunchStartHhmm", "12:45"),
+        swing_lunch_end_hhmm=_read_str(base_dir, "SwingLunchEndHhmm", "13:45"),
+        adaptive_stop_atr_mult=_read_float(base_dir, "SwingAdaptiveStopAtrMult", 1.15),
+        partial_exit_fraction=_read_float(base_dir, "SwingPartialExitFraction", 0.5),
+        partial_exit_r_multiple=_read_float(base_dir, "SwingPartialExitRMultiple", 1.0),
+        partial_remainder_mode=(
+            "tp"
+            if _read_str(base_dir, "SwingPartialRemainderMode", "trail").strip().lower() == "tp"
+            else "trail"
+        ),
+        post_entry_time_stop_bars=_read_int(base_dir, "SwingPostEntryTimeStopBars", 0),
+        post_entry_time_stop_min_tp_progress=_read_float(base_dir, "SwingPostEntryTimeStopMinTpProgress", 0.12),
+        atr_slope_lag=_read_int(base_dir, "SwingAtrSlopeLag", 5),
+        min_atr_expansion=_read_float(base_dir, "SwingMinAtrExpansion", 1.08),
+        impulse_range_lookback=_read_int(base_dir, "SwingImpulseRangeLookback", 10),
+        impulse_strength=_read_float(base_dir, "SwingImpulseStrength", 1.35),
+        max_retest_bars_fast=_read_int(base_dir, "SwingMaxRetestBarsFast", 6),
+        min_range_atr_ratio=_read_float(base_dir, "SwingMinRangeAtrRatio", 2.5),
+        max_trades_per_day=_read_int(base_dir, "SwingMaxTradesPerDay", 5),
+        max_loss_streak=_read_int(base_dir, "SwingMaxLossStreak", 3),
+        loss_cooldown_bars=_read_int(base_dir, "SwingLossCooldownBars", 30),
+        use_market_on_strong_breakout=_read_bool(base_dir, "SwingUseMarketOnStrongBreakout", True),
+        market_impulse_mult=_read_float(base_dir, "SwingMarketImpulseMult", 1.12),
+        risk_per_trade_rub=_read_float(base_dir, "SwingRiskPerTradeRub", 0.0),
+        sizing_min_qty=_read_float(base_dir, "SwingSizingMinQty", 1.0),
+        sizing_max_qty=_read_float(base_dir, "SwingSizingMaxQty", 100.0),
+        trades_log_csv_path=_read_str(base_dir, "SwingTradesLogCsvPath", "").strip(),
+    )
+    swing_runner = SwingLiveRunner(
+        base_dir=base_dir,
+        gateway=gateway,
+        logger=logger,
+        symbol=mm_symbol,
+        market=mm_market,
+        lot_size=mm_lot,
+        tick_size=mm_tick,
+        params=swing_params,
+        candle_interval=swing_interval,
+        poll_interval_sec=_read_float(base_dir, "SwingPollIntervalSec", 30.0),
+        get_latest=market_data_engine.get_latest,
+        instrument_id=inst,
+        token=tok,
+        host=host.strip(),
+    )
+    swing_runner.start()
+    market_data_engine.subscribe(swing_runner.on_market_data)
+    logger.info(
+        "[RUNTIME] TradingStrategy=SWING_BREAKOUT interval=%s poll=%.1fs symbol=%s",
+        swing_interval,
+        _read_float(base_dir, "SwingPollIntervalSec", 30.0),
+        mm_symbol,
+    )
 
     if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:
         from fix_engine.data.tbank_session import run_tbank_paper_session
