@@ -1,8 +1,0 @@
-FACTOR RESEARCH — CONCLUSION
-===========================
-
-Trade count: 30
-Reliable (n >= 30): yes
-
-CONCLUSION: Weak multi-factor signal passed the gate — see model_metrics.json.
-Reconstruction block was run; validate out-of-sample before live use.
