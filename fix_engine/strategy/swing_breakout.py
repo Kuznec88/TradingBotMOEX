@@ -1503,14 +1503,14 @@ def _run_backtest_retest(
                 ):
                     rmul = p.partial_exit_r_multiple
                     part_qty = working_qty * p.partial_exit_fraction
-                    if pos == "long" and part_qty > 1e-12 and hi >= entry_price + rmul * risk:
+                    if pos == "long" and part_qty > 1e-12 and hi >= entry_price + rmul * risk and lo > stop_level:
                         px = _slip_price(entry_price + rmul * risk, "sell", p.tick_size, p.slippage_ticks)
                         ef_alloc = entry_fee_total * (part_qty / max(initial_qty, 1e-12))
                         _append_trade(exit_px=px, exit_qty=part_qty, reason="partial_tp", bar_idx=i, entry_fee_alloc=ef_alloc)
                         working_qty -= part_qty
                         entry_fee_total -= ef_alloc
                         partial_done = True
-                    elif pos == "short" and part_qty > 1e-12 and lo <= entry_price - rmul * risk:
+                    elif pos == "short" and part_qty > 1e-12 and lo <= entry_price - rmul * risk and hi < stop_level:
                         px = _slip_price(entry_price - rmul * risk, "buy", p.tick_size, p.slippage_ticks)
                         ef_alloc = entry_fee_total * (part_qty / max(initial_qty, 1e-12))
                         _append_trade(exit_px=px, exit_qty=part_qty, reason="partial_tp", bar_idx=i, entry_fee_alloc=ef_alloc)
@@ -1533,6 +1533,10 @@ def _run_backtest_retest(
                     if pos == "long":
                         sl_l = stop_level
                         tp_l = tp_level
+                        # Стоп бара — уровень, известный до его начала: внутри бара порядок high/low неизвестен.
+                        if trail_stop is not None:
+                            sl_l = max(sl_l, trail_stop)
+                        stop_reason = "trailing_stop" if trail_stop is not None and sl_l == trail_stop else "stop_loss"
                         if p.break_even_r_multiple > 0 and not be_armed and risk > 1e-12:
                             if hi >= entry_price + p.break_even_r_multiple * risk:
                                 sl_l = max(sl_l, entry_price)
@@ -1546,26 +1550,28 @@ def _run_backtest_retest(
                             if best_fav - entry_price >= t_arm:
                                 cand = best_fav - t_gap
                                 trail_stop = cand if trail_stop is None else max(trail_stop, cand)
-                                sl_l = max(sl_l, trail_stop)
 
                         hit_tp = hi >= tp_l
                         hit_sl = lo <= sl_l
                         if hit_tp and hit_sl:
                             if p.intrabar_priority == "stop_first":
                                 exit_price = _slip_price(sl_l, "sell", p.tick_size, p.slippage_ticks)
-                                reason = "stop_loss"
+                                reason = stop_reason
                             else:
                                 exit_price = _slip_price(tp_l, "sell", p.tick_size, p.slippage_ticks)
                                 reason = "take_profit"
                         elif hit_sl:
                             exit_price = _slip_price(sl_l, "sell", p.tick_size, p.slippage_ticks)
-                            reason = "stop_loss"
+                            reason = stop_reason
                         elif hit_tp:
                             exit_price = _slip_price(tp_l, "sell", p.tick_size, p.slippage_ticks)
                             reason = "take_profit"
                     else:
                         sl_l = stop_level
                         tp_l = tp_level
+                        if trail_stop is not None:
+                            sl_l = min(sl_l, trail_stop)
+                        stop_reason = "trailing_stop" if trail_stop is not None and sl_l == trail_stop else "stop_loss"
                         if p.break_even_r_multiple > 0 and not be_armed and risk > 1e-12:
                             if lo <= entry_price - p.break_even_r_multiple * risk:
                                 sl_l = min(sl_l, entry_price)
@@ -1581,20 +1587,19 @@ def _run_backtest_retest(
                             if entry_price - best_fav >= t_arm:
                                 cand = best_fav + t_gap
                                 trail_stop = cand if trail_stop is None else min(trail_stop, cand)
-                                sl_l = min(sl_l, trail_stop)
 
                         hit_tp = lo <= tp_l
                         hit_sl = hi >= sl_l
                         if hit_tp and hit_sl:
                             if p.intrabar_priority == "stop_first":
                                 exit_price = _slip_price(sl_l, "buy", p.tick_size, p.slippage_ticks)
-                                reason = "stop_loss"
+                                reason = stop_reason
                             else:
                                 exit_price = _slip_price(tp_l, "buy", p.tick_size, p.slippage_ticks)
                                 reason = "take_profit"
                         elif hit_sl:
                             exit_price = _slip_price(sl_l, "buy", p.tick_size, p.slippage_ticks)
-                            reason = "stop_loss"
+                            reason = stop_reason
                         elif hit_tp:
                             exit_price = _slip_price(tp_l, "buy", p.tick_size, p.slippage_ticks)
                             reason = "take_profit"
@@ -1643,7 +1648,7 @@ def _run_backtest_retest(
                 stop_level = intent.stop_price
                 tp_level = intent.take_profit_price
                 risk = intent.risk_per_unit
-                best_fav = hi if pos == "long" else lo
+                best_fav = entry_price
                 trail_stop = None
                 partial_done = False
                 be_armed = False
@@ -1707,7 +1712,7 @@ def _run_backtest_retest(
                     stop_level = intent.stop_price
                     tp_level = intent.take_profit_price
                     risk = intent.risk_per_unit
-                    best_fav = hi if pos == "long" else lo
+                    best_fav = entry_price
                     trail_stop = None
                     partial_done = False
                     be_armed = False

@@ -60,3 +60,6 @@ fix_engine/log/
 fix_engine/store/
 trade_economics.db
 last_session*.json
+
+# Market data and lab results (regenerated)
+/data/
