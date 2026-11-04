@@ -79,6 +79,6 @@ def manifest_example_yaml() -> str:
 csvs:
   - path: fix_engine/backtest/history_1h_6m.csv
     instrument: primary_1h
-  - path: fix_engine/backtest/history_5m_6m.csv
+  - path: fix_engine/backtest/history_1h_12m.csv
     instrument: primary_5m
 """

@@ -23,7 +23,7 @@ from fix_engine.tools.common_cfg_dir import read_tinvest_token_from_dir
 
 SANDBOX_HOST = "sandbox-invest-public-api.tbank.ru:443"
 PRICE_COLUMNS = ("open", "high", "low", "close")
-CHUNK_DAYS = {"5m": 7, "15m": 21, "1h": 80}
+CHUNK_DAYS = {"1h": 80, "4h": 80}
 
 
 def stitch_contracts(parts: list[pd.DataFrame]) -> pd.DataFrame:
@@ -75,6 +75,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--assets", nargs="+", default=["SR", "GZ", "LK", "Si", "MX"], help="префиксы тикеров")
     ap.add_argument("--start", default="2023-06-01")
+    ap.add_argument("--end", default="", help="по умолчанию до текущего момента")
     ap.add_argument("--roll-days", type=int, default=7)
     ap.add_argument("--intervals", nargs="+", choices=tuple(CHUNK_DAYS), default=list(CHUNK_DAYS))
     ap.add_argument("--host", default=SANDBOX_HOST)
@@ -94,12 +95,11 @@ def main() -> int:
     from t_tech.invest.schemas import CandleInterval, InstrumentStatus
 
     intervals = {
-        "5m": CandleInterval.CANDLE_INTERVAL_5_MIN,
-        "15m": CandleInterval.CANDLE_INTERVAL_15_MIN,
         "1h": CandleInterval.CANDLE_INTERVAL_HOUR,
+        "4h": CandleInterval.CANDLE_INTERVAL_4_HOUR,
     }
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-    now = datetime.now(timezone.utc)
+    now = datetime.fromisoformat(args.end).replace(tzinfo=timezone.utc) if args.end else datetime.now(timezone.utc)
     roll = timedelta(days=args.roll_days)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     meta_path = args.out_dir / "meta.json"
@@ -138,6 +138,9 @@ def main() -> int:
                     if not part.empty:
                         parts.append(part)
                     prev_end = end
+                if not parts:
+                    print(f"{asset} {name}: свечей нет", file=sys.stderr)
+                    continue
                 candles = stitch_contracts(parts)
                 candles = candles[candles["is_complete"]]
                 candles.to_csv(args.out_dir / f"{asset}_{name}.csv", index=False)

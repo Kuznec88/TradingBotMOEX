@@ -21,9 +21,9 @@ DATA_DIR = REPO_ROOT / "data" / "futures"
 LAB_DIR = REPO_ROOT / "data" / "lab"
 # До этой даты можно подбирать параметры; после неё — только отдельная проверка.
 RESEARCH_END = pd.Timestamp("2025-01-01", tz="UTC")
-FRAMES = ("5m", "15m", "1h")
+FRAMES = ("1h", "4h")
 HtfMode = Literal["hard", "soft", "off"]
-Period = Literal["research", "holdout"]
+Period = Literal["research", "holdout", "all"]
 EntryMode = Literal["retest", "volume_breakout"]
 
 POSITION_COLUMNS = [
@@ -53,10 +53,9 @@ def bot_defaults() -> SwingBreakoutParams:
 def apply_htf_mode(params: SwingBreakoutParams, mode: HtfMode, frame: str) -> SwingBreakoutParams:
     if mode == "off":
         return replace(params, htf_resample_rule="", htf_secondary_resample_rule="")
-    # На 1h старший таймфрейм 1h совпал бы с базовым, и сделок бы не было.
-    primary, secondary = ("4h", "") if frame == "1h" else ("1h", "4h")
+    primary = "1D" if frame == "4h" else "4h"
     gate: Literal["hard", "soft"] = "soft" if mode == "soft" else "hard"
-    return replace(params, htf_resample_rule=primary, htf_secondary_resample_rule=secondary, htf_gate_mode=gate)
+    return replace(params, htf_resample_rule=primary, htf_secondary_resample_rule="", htf_gate_mode=gate)
 
 
 def build_params(

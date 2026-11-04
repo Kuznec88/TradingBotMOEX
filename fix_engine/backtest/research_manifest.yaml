@@ -19,16 +19,6 @@ datasets:
     csv: fix_engine/backtest/history_1h_6m.csv
     htf_resample_rule: "4h"
 
-  - run_id: sber_15m_6m_htf1h
-    instrument_label: primary_cfg
-    csv: fix_engine/backtest/history_15m_6m.csv
-    htf_resample_rule: "1h"
-
-  - run_id: sber_5m_6m_htf15m
-    instrument_label: primary_cfg
-    csv: fix_engine/backtest/history_5m_6m.csv
-    htf_resample_rule: "15min"
-
   - run_id: sber_1h_12m_nohtf
     instrument_label: primary_cfg
     csv: fix_engine/backtest/history_1h_12m.csv

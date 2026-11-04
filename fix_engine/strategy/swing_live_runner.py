@@ -1,5 +1,5 @@
 """
-Живой раннер свинг-стратегии: свечи 5m/15m с T-Invest API, FSM ретеста (swing_breakout),
+Живой раннер свинг-стратегии: свечи 1h/4h с T-Invest API, FSM ретеста (swing_breakout),
 вход лимитом на уровне, выход intrabar по TP/SL/трейлингу.
 """
 
@@ -472,15 +472,16 @@ class SwingLiveRunner:
         from t_tech.invest.schemas import CandleInterval
 
         interval_map = {
-            "5m": CandleInterval.CANDLE_INTERVAL_5_MIN,
-            "15m": CandleInterval.CANDLE_INTERVAL_15_MIN,
+            "1h": CandleInterval.CANDLE_INTERVAL_HOUR,
+            "4h": CandleInterval.CANDLE_INTERVAL_4_HOUR,
         }
+        lookback_days = {"1h": 80, "4h": 80}
         if self.candle_interval not in interval_map:
-            raise ValueError(f"SwingCandleInterval must be 5m or 15m, got {self.candle_interval!r}")
+            raise ValueError(f"SwingCandleInterval must be 1h or 4h, got {self.candle_interval!r}")
         ci = interval_map[self.candle_interval]
 
         to_dt = datetime.now(timezone.utc)
-        from_dt = to_dt - timedelta(days=14)
+        from_dt = to_dt - timedelta(days=lookback_days[self.candle_interval])
         rows: list[dict[str, object]] = []
         forming_included = False
         with Client(self.token, target=self.host) as client:

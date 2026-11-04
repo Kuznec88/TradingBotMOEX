@@ -264,9 +264,9 @@ def _run_locked(
     if not inst:
         raise RuntimeError("SWING_BREAKOUT requires TBankInstrumentId")
     host = _read_str(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
-    swing_interval = _read_str(base_dir, "SwingCandleInterval", "15m").strip().lower()
-    if swing_interval not in {"5m", "15m"}:
-        raise RuntimeError(f"SwingCandleInterval must be 5m or 15m, got {swing_interval!r}")
+    swing_interval = _read_str(base_dir, "SwingCandleInterval", "1h").strip().lower()
+    if swing_interval not in {"1h", "4h"}:
+        raise RuntimeError(f"SwingCandleInterval must be 1h or 4h, got {swing_interval!r}")
 
     swing_params = load_swing_params(base_dir, tick_size=tick_size)
     swing_runner = SwingLiveRunner(

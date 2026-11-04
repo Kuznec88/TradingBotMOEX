@@ -4,11 +4,11 @@
 Важно:
 - Это OHLC/объёмы по интервалу, не каждый тик стакана.
 - Лимит за вызов — до 2400 свечей; длинные окна автоматически режутся на чанки.
-- 1m за >1.5 суток — посуточно; прочие интервалы — шаг chunk_days (авто от ТФ).
+- Шаг запросов — chunk_days (авто от ТФ).
 
 Запуск из fix_engine:
   python tools/fetch_tbank_candles_history.py --interval 1h --days 183 --out history_1h.csv
-  python tools/fetch_tbank_candles_history.py --interval 15m --days 14
+  python tools/fetch_tbank_candles_history.py --interval 4h --days 400
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ def _q_float(q: object | None) -> float:
 
 
 def _bars_per_day(interval: str) -> float:
-    return {"1m": 1440.0, "5m": 288.0, "15m": 96.0, "1h": 24.0, "4h": 6.0}[interval]
+    return {"1h": 24.0, "4h": 6.0}[interval]
 
 
 def _chunk_days_for_interval(interval: str, *, limit: int = 2400, safety: float = 0.92) -> float:
     """Макс. дней за один get_candles, чтобы уложиться в limit свечей."""
     bpd = _bars_per_day(interval)
-    return max(1.0, (limit * safety) / bpd)
+    return min(80.0, max(1.0, (limit * safety) / bpd))
 
 
 def _dedupe_sort_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -62,8 +62,8 @@ def main() -> None:
     ap.add_argument("--days", type=float, default=14.0, help="глубина назад от now (UTC)")
     ap.add_argument(
         "--interval",
-        choices=("1m", "5m", "15m", "1h", "4h"),
-        default="15m",
+        choices=("1h", "4h"),
+        default="1h",
         help="интервал свечей (длинное окно режется на чанки под лимит 2400 свечей)",
     )
     ap.add_argument("--out", type=str, default="", help="CSV или пусто = только сводка в stdout")
@@ -96,9 +96,6 @@ def main() -> None:
     from t_tech.invest.schemas import CandleInterval
 
     interval_map = {
-        "1m": CandleInterval.CANDLE_INTERVAL_1_MIN,
-        "5m": CandleInterval.CANDLE_INTERVAL_5_MIN,
-        "15m": CandleInterval.CANDLE_INTERVAL_15_MIN,
         "1h": CandleInterval.CANDLE_INTERVAL_HOUR,
         "4h": CandleInterval.CANDLE_INTERVAL_4_HOUR,
     }
@@ -116,35 +113,19 @@ def main() -> None:
         chunk = timedelta(days=_chunk_days_for_interval(args.interval, limit=limit))
 
     with Client(token, target=host) as client:
-        if args.interval == "1m" and args.days > 1.5:
-            day = timedelta(days=1)
-            cur = from_dt
-            while cur < to_dt:
-                nxt = min(cur + day, to_dt)
-                r = client.market_data.get_candles(
-                    instrument_id=iid,
-                    from_=cur,
-                    to=nxt,
-                    interval=ci,
-                    limit=limit,
-                )
-                for c in r.candles:
-                    rows.append(_candle_row(c))
-                cur = nxt
-        else:
-            cur = from_dt
-            while cur < to_dt:
-                nxt = min(cur + chunk, to_dt)
-                r = client.market_data.get_candles(
-                    instrument_id=iid,
-                    from_=cur,
-                    to=nxt,
-                    interval=ci,
-                    limit=limit,
-                )
-                for c in r.candles:
-                    rows.append(_candle_row(c))
-                cur = nxt
+        cur = from_dt
+        while cur < to_dt:
+            nxt = min(cur + chunk, to_dt)
+            r = client.market_data.get_candles(
+                instrument_id=iid,
+                from_=cur,
+                to=nxt,
+                interval=ci,
+                limit=limit,
+            )
+            for c in r.candles:
+                rows.append(_candle_row(c))
+            cur = nxt
 
     rows = _dedupe_sort_rows(rows)
 

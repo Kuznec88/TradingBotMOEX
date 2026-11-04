@@ -23,6 +23,7 @@ from lab import engine  # noqa: E402
 LIGHT = {"surface": "#fcfcfb", "text": "#52514e", "grid": "#e4e3df", "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"], "gain": "#2a78d6", "loss": "#eb6834"}
 DARK = {"surface": "#1a1a19", "text": "#c3c2b7", "grid": "#383835", "series": ["#3987e5", "#d95926", "#199e70", "#c98500"], "gain": "#3987e5", "loss": "#d95926"}
 ASSET_NAMES = {"SR": "Сбербанк", "GZ": "Газпром", "LK": "Лукойл", "Si": "Доллар/рубль (Si)", "MX": "Индекс Мосбиржи", "RI": "Индекс РТС", "RN": "Роснефть", "ME": "Мосбиржа", "AF": "Аэрофлот", "SG": "Сургутнефтегаз (прив.)"}
+ENTRY_LABELS = {"retest": "Пробой и ретест", "volume_breakout": "Объём + пробой, сразу"}
 HTF_LABELS = {"hard": "Жёсткий", "soft": "Мягкий", "off": "Выключен"}
 EXIT_LABELS = {
     "stop_loss": "Стоп",
@@ -85,8 +86,8 @@ def field_widget(spec: tuple[Any, ...]) -> Any:
 
 
 @st.cache_data(show_spinner=False, persist="disk", max_entries=500)
-def cached_run(asset: str, frame: str, overrides_json: str, htf_mode: str, period: str, settings_stamp: float) -> pd.DataFrame:
-    return engine.run_asset(asset, frame, json.loads(overrides_json), htf_mode, period)  # type: ignore[arg-type]
+def cached_run(asset: str, frame: str, overrides_json: str, htf_mode: str, period: str, entry_mode: str, settings_stamp: float) -> pd.DataFrame:
+    return engine.run_asset(asset, frame, json.loads(overrides_json), htf_mode, period, entry_mode=entry_mode)  # type: ignore[arg-type]
 
 
 def settings_stamp() -> float:
@@ -99,14 +100,14 @@ def settings_stamp() -> float:
     return max(f.stat().st_mtime for f in files)
 
 
-def run_all(assets: list[str], frame: str, overrides: dict[str, Any], htf_mode: str, period: str) -> pd.DataFrame:
+def run_all(assets: list[str], frame: str, overrides: dict[str, Any], htf_mode: str, period: str, entry_mode: str) -> pd.DataFrame:
     overrides_json = json.dumps(overrides, sort_keys=True)
     stamp = settings_stamp()
     frames = []
     bar = st.progress(0.0, text="Считаю бэктест…")
     for i, asset in enumerate(assets):
         bar.progress(i / len(assets), text=f"Считаю {ASSET_NAMES.get(asset, asset)}, {frame}…")
-        frames.append(cached_run(asset, frame, overrides_json, htf_mode, period, stamp))
+        frames.append(cached_run(asset, frame, overrides_json, htf_mode, period, entry_mode, stamp))
     bar.empty()
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=engine.POSITION_COLUMNS)
 
@@ -330,12 +331,13 @@ def main() -> None:
     with st.sidebar:
         st.header("Данные")
         assets = st.multiselect("Инструменты", list(meta), default=["SR"], format_func=lambda a: ASSET_NAMES.get(a, a))
-        frame = st.selectbox("Таймфрейм", engine.FRAMES, index=2, help="5m считается заметно дольше, особенно на нескольких инструментах.")
+        frame = st.selectbox("Таймфрейм", engine.FRAMES, index=0)
         st.header("Заготовка")
         preset = st.selectbox("Настройки", list(PRESETS))
         st.button("Применить заготовку", on_click=apply_preset, args=(preset,), width="stretch")
 
         st.header("Входы")
+        entry_mode = st.selectbox("Тип входа", list(ENTRY_LABELS), format_func=lambda m: ENTRY_LABELS[m], help="Для входа «Объём + пробой» важны только всплеск объёма и лимит сделок в день.")
         st.selectbox("Старший таймфрейм", list(HTF_LABELS), format_func=lambda m: HTF_LABELS[m], key="htf_mode")
         st.toggle("Требовать всплеск объёма", key="volume_spike_required")
         st.toggle("Рынком при сильном пробое", key="use_market_on_strong_breakout")
@@ -354,7 +356,7 @@ def main() -> None:
     overrides["use_market_on_strong_breakout"] = st.session_state["use_market_on_strong_breakout"]
     overrides["commission_rate"] = st.session_state["commission_pct"] / 100
     htf_mode = st.session_state["htf_mode"]
-    config = {"assets": sorted(assets), "frame": frame, "htf_mode": htf_mode, "params": overrides}
+    config = {"assets": sorted(assets), "frame": frame, "entry_mode": entry_mode, "htf_mode": htf_mode, "params": overrides}
 
     research_tab, compare_tab, holdout_tab = st.tabs(["Исследование", "Сравнение запусков", "Проверка на 2025–2026"])
 
@@ -363,7 +365,7 @@ def main() -> None:
         if st.session_state.get("last_config") not in (None, config):
             st.info("Настройки изменились. Нажми «Запустить», чтобы пересчитать.")
         if st.button("Запустить", type="primary", disabled=not assets):
-            positions = run_all(assets, frame, overrides, htf_mode, "research")
+            positions = run_all(assets, frame, overrides, htf_mode, "research", entry_mode)
             st.session_state["last_config"] = config
             st.session_state["last_positions"] = positions
             st.session_state["last_summary"] = engine.summarize(positions, months=months_covered(assets, frame, "research"))
@@ -371,7 +373,7 @@ def main() -> None:
         if positions is not None:
             last = st.session_state["last_config"]
             save_col, name_col = st.columns([1, 3])
-            name = name_col.text_input("Название запуска", value=f"{HTF_LABELS[last['htf_mode']]} HTF, {last['frame']}", label_visibility="collapsed")
+            name = name_col.text_input("Название запуска", value=f"{ENTRY_LABELS[last['entry_mode']]}, {last['frame']}", label_visibility="collapsed")
             if save_col.button("Сохранить запуск"):
                 engine.save_run(name, last, positions, st.session_state["last_summary"])
                 st.toast("Запуск сохранён")
@@ -388,7 +390,7 @@ def main() -> None:
         st.metric("Проверок всего", engine.holdout_check_count())
         confirmed = st.checkbox("Настройки выбраны, и я понимаю, что менять их по этому результату нельзя")
         if st.button("Проверить на 2025–2026", disabled=not (confirmed and assets)):
-            held = run_all(assets, frame, overrides, htf_mode, "holdout")
+            held = run_all(assets, frame, overrides, htf_mode, "holdout", entry_mode)
             summary = engine.summarize(held, months=months_covered(assets, frame, "holdout"))
             count = engine.log_holdout_check(config, summary)
             st.session_state["holdout_result"] = (held, summary, count, frame)
