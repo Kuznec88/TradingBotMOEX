@@ -61,6 +61,12 @@ def test_htf_mode_avoids_same_timeframe_on_1h() -> None:
     assert engine.apply_htf_mode(params, "soft", "5m").htf_gate_mode == "soft"
 
 
+def test_contract_value_scales_price_for_fees() -> None:
+    params = engine.build_params({}, frame="15m", htf_mode="off", tick=10.0, tick_rub=16.0)
+    assert params.rub_per_point == pytest.approx(1.6)
+    assert params.notional_scale == pytest.approx(1.6)
+
+
 def test_holdout_checks_are_counted(tmp_path) -> None:
     config = {"frame": "1h"}
     assert engine.log_holdout_check(config, {"positions": 1}, log_dir=tmp_path) == 1

@@ -22,7 +22,7 @@ from lab import engine  # noqa: E402
 
 LIGHT = {"surface": "#fcfcfb", "text": "#52514e", "grid": "#e4e3df", "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"], "gain": "#2a78d6", "loss": "#eb6834"}
 DARK = {"surface": "#1a1a19", "text": "#c3c2b7", "grid": "#383835", "series": ["#3987e5", "#d95926", "#199e70", "#c98500"], "gain": "#3987e5", "loss": "#d95926"}
-ASSET_NAMES = {"SR": "Сбербанк", "GZ": "Газпром", "LK": "Лукойл", "Si": "Доллар/рубль (Si)", "MX": "Индекс Мосбиржи"}
+ASSET_NAMES = {"SR": "Сбербанк", "GZ": "Газпром", "LK": "Лукойл", "Si": "Доллар/рубль (Si)", "MX": "Индекс Мосбиржи", "RI": "Индекс РТС", "RN": "Роснефть", "ME": "Мосбиржа", "AF": "Аэрофлот", "SG": "Сургутнефтегаз (прив.)"}
 HTF_LABELS = {"hard": "Жёсткий", "soft": "Мягкий", "off": "Выключен"}
 EXIT_LABELS = {
     "stop_loss": "Стоп",

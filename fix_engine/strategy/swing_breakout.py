@@ -55,6 +55,8 @@ class SwingBreakoutParams:
 
     # --- Retest FSM + структурный риск (основной режим) ---
     use_retest_fsm: bool = True
+    # False: входы только из extra_intent_fn, FSM ретеста не работает (только бэктест).
+    retest_fsm_enabled: bool = True
     atr_period: int = 14
     # Не входить, если ATR слишком низкий (шум/пила). 0 = выкл.
     atr_min_ticks: float = 0.0
@@ -1555,13 +1557,13 @@ def _run_backtest_retest(
                         hit_sl = lo <= sl_l
                         if hit_tp and hit_sl:
                             if p.intrabar_priority == "stop_first":
-                                exit_price = _slip_price(sl_l, "sell", p.tick_size, p.slippage_ticks)
+                                exit_price = _slip_price(min(sl_l, float(row["open"])), "sell", p.tick_size, p.slippage_ticks)
                                 reason = stop_reason
                             else:
                                 exit_price = _slip_price(tp_l, "sell", p.tick_size, p.slippage_ticks)
                                 reason = "take_profit"
                         elif hit_sl:
-                            exit_price = _slip_price(sl_l, "sell", p.tick_size, p.slippage_ticks)
+                            exit_price = _slip_price(min(sl_l, float(row["open"])), "sell", p.tick_size, p.slippage_ticks)
                             reason = stop_reason
                         elif hit_tp:
                             exit_price = _slip_price(tp_l, "sell", p.tick_size, p.slippage_ticks)
@@ -1592,13 +1594,13 @@ def _run_backtest_retest(
                         hit_sl = hi >= sl_l
                         if hit_tp and hit_sl:
                             if p.intrabar_priority == "stop_first":
-                                exit_price = _slip_price(sl_l, "buy", p.tick_size, p.slippage_ticks)
+                                exit_price = _slip_price(max(sl_l, float(row["open"])), "buy", p.tick_size, p.slippage_ticks)
                                 reason = stop_reason
                             else:
                                 exit_price = _slip_price(tp_l, "buy", p.tick_size, p.slippage_ticks)
                                 reason = "take_profit"
                         elif hit_sl:
-                            exit_price = _slip_price(sl_l, "buy", p.tick_size, p.slippage_ticks)
+                            exit_price = _slip_price(max(sl_l, float(row["open"])), "buy", p.tick_size, p.slippage_ticks)
                             reason = stop_reason
                         elif hit_tp:
                             exit_price = _slip_price(tp_l, "buy", p.tick_size, p.slippage_ticks)
@@ -1675,9 +1677,11 @@ def _run_backtest_retest(
                     pending = (_start_bar, intent, waited)
 
         if pos == "flat" and pending is None and not filled_this_bar:
-            st, intent, _ = retest_fsm_step(
-                st, row=row, prev_row=prev, params=p, bar_time=bar_t, governor=governor
-            )
+            intent = None
+            if p.retest_fsm_enabled:
+                st, intent, _ = retest_fsm_step(
+                    st, row=row, prev_row=prev, params=p, bar_time=bar_t, governor=governor
+                )
             if intent is None and extra_intent_fn is not None:
                 intent = extra_intent_fn(
                     i=i,

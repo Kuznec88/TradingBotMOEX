@@ -14,6 +14,7 @@ import pandas as pd
 
 from fix_engine.config.swing_params import load_swing_params
 from fix_engine.strategy.swing_breakout import BacktestResult, SwingBreakoutParams, run_backtest
+from fix_engine.strategy.volume_breakout import volume_breakout_extra_intent
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data" / "futures"
@@ -23,6 +24,7 @@ RESEARCH_END = pd.Timestamp("2025-01-01", tz="UTC")
 FRAMES = ("5m", "15m", "1h")
 HtfMode = Literal["hard", "soft", "off"]
 Period = Literal["research", "holdout"]
+EntryMode = Literal["retest", "volume_breakout"]
 
 POSITION_COLUMNS = [
     "asset", "frame", "side", "entry_time", "exit_time", "entry_price", "exit_price",
@@ -66,7 +68,9 @@ def build_params(
     tick_rub: float,
 ) -> SwingBreakoutParams:
     params = replace(bot_defaults(), **overrides)
-    params = replace(params, tick_size=tick, rub_per_point=tick_rub / tick)
+    rub_per_point = tick_rub / tick
+    # Комиссия считается от стоимости контракта в рублях, а не от цены в пунктах.
+    params = replace(params, tick_size=tick, rub_per_point=rub_per_point, notional_scale=rub_per_point)
     return apply_htf_mode(params, htf_mode, frame)
 
 
@@ -116,6 +120,7 @@ def run_asset(
     htf_mode: HtfMode,
     period: Period = "research",
     data_dir: Path = DATA_DIR,
+    entry_mode: EntryMode = "retest",
 ) -> pd.DataFrame:
     meta = load_meta(data_dir)[asset]
     candles = load_candles(asset, frame, data_dir)
@@ -123,7 +128,11 @@ def run_asset(
         candles = candles[candles.index < RESEARCH_END]
     ohlcv = candles[["open", "high", "low", "close", "volume"]]
     params = build_params(overrides, frame=frame, htf_mode=htf_mode, tick=meta["tick"], tick_rub=meta["tick_rub"])
-    res = run_backtest(ohlcv, params, log_trades=False)
+    if entry_mode == "volume_breakout":
+        params = replace(params, retest_fsm_enabled=False)
+        res = run_backtest(ohlcv, params, log_trades=False, extra_intent_fn=volume_breakout_extra_intent)
+    else:
+        res = run_backtest(ohlcv, params, log_trades=False)
     positions = positions_from_result(res, ohlcv.index, asset=asset, frame=frame, rub_per_point=params.rub_per_point)
     if period == "holdout":
         positions = positions[positions["entry_time"] >= RESEARCH_END]

@@ -102,7 +102,8 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     roll = timedelta(days=args.roll_days)
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    meta: dict[str, dict[str, object]] = {}
+    meta_path = args.out_dir / "meta.json"
+    meta: dict[str, dict[str, object]] = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     with Client(token, target=args.host) as client:
         futures = client.instruments.futures(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_ALL).instruments
@@ -142,7 +143,7 @@ def main() -> int:
                 candles.to_csv(args.out_dir / f"{asset}_{name}.csv", index=False)
                 print(f"{asset} {name}: {len(candles)} свечей, контрактов {candles['contract'].nunique()}", flush=True)
 
-    (args.out_dir / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    meta_path.write_text(json.dumps(meta, indent=1), encoding="utf-8")
     return 0
 
 

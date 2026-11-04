@@ -61,7 +61,9 @@ def _run(candles: pd.DataFrame, params: SwingBreakoutParams) -> list:
 
 def test_trailing_stop_is_not_hit_by_the_bar_that_moved_it() -> None:
     # Бар дошёл до +3R и откатил до +1.5R. Новый трейлинг (+2.5R) действует только со следующего бара.
-    trades = _run(_candles([(1300.0, 1150.0, 1200.0), (1210.0, 1100.0, 1120.0)]), _params())
+    candles = _candles([(1300.0, 1150.0, 1200.0), (1270.0, 1100.0, 1120.0)])
+    candles.iloc[ENTRY_BAR + 2, candles.columns.get_loc("open")] = 1260.0
+    trades = _run(candles, _params())
     assert trades[0].exit_reason == "trailing_stop"
     assert trades[0].exit_bar == ENTRY_BAR + 2
     assert trades[0].exit_price == 1250.0
@@ -86,3 +88,11 @@ def test_partial_exit_applies_when_stop_is_not_touched() -> None:
     )
     assert [t.exit_reason for t in trades] == ["partial_tp", "stop_loss"]
     assert trades[0].exit_price == ENTRY + RISK
+
+
+def test_stop_fills_at_open_when_bar_gaps_through_it() -> None:
+    candles = _candles([(1000.0, 800.0, 820.0)])
+    candles.iloc[ENTRY_BAR + 1, candles.columns.get_loc("open")] = 850.0
+    trades = _run(candles, _params())
+    assert trades[0].exit_reason == "stop_loss"
+    assert trades[0].exit_price == 850.0
