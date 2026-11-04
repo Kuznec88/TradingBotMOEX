@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import date, time as dt_time
@@ -265,27 +266,32 @@ class SwingTradeGovernor:
             self.loss_streak = 0
 
 
+_TRADES_CSV_LOCK = threading.Lock()
+
+
 def append_swing_trade_csv(path: Path | str, row: dict[str, Any]) -> None:
     """Добавить строку в trades_log.csv; при новых колонках переписывает файл с объединённым заголовком."""
     p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if not p.exists() or p.stat().st_size == 0:
+    # Файл переписывается целиком, а пишут в него раннеры всех инструментов.
+    with _TRADES_CSV_LOCK:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists() or p.stat().st_size == 0:
+            with p.open("w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(row.keys()))
+                w.writeheader()
+                w.writerow(row)
+            return
+        with p.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            prev_fields = list(reader.fieldnames or [])
+            old_rows = list(reader)
+        keys = list(dict.fromkeys(prev_fields + list(row.keys())))
         with p.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(row.keys()))
+            w = csv.DictWriter(f, fieldnames=keys)
             w.writeheader()
-            w.writerow(row)
-        return
-    with p.open("r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        prev_fields = list(reader.fieldnames or [])
-        old_rows = list(reader)
-    keys = list(dict.fromkeys(prev_fields + list(row.keys())))
-    with p.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=keys)
-        w.writeheader()
-        for r in old_rows:
-            w.writerow({k: r.get(k, "") for k in keys})
-        w.writerow({k: row.get(k, "") for k in keys})
+            for r in old_rows:
+                w.writerow({k: r.get(k, "") for k in keys})
+            w.writerow({k: row.get(k, "") for k in keys})
 
 
 def compute_position_qty_rub(

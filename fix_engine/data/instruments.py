@@ -40,20 +40,21 @@ def resolve_front_future(futures: Iterable[object], prefix: str, *, now: datetim
     front = candidates[0]
     return FrontFuture(
         uid=front.uid,
-        ticker=front.ticker,
+        ticker=front.ticker.upper(),
         tick=_q_float(front.min_price_increment),
         tick_rub=_q_float(front.min_price_increment_amount),
         no_entries_after=front.expiration_date - roll,
     )
 
 
-def fetch_front_future(*, token: str, host: str, prefix: str, roll_days: int) -> FrontFuture:
+def fetch_front_futures(*, token: str, host: str, prefixes: list[str], roll_days: int) -> list[FrontFuture]:
     from t_tech.invest import Client
     from t_tech.invest.schemas import InstrumentStatus
 
     with Client(token, target=host) as client:
         futures = client.instruments.futures(instrument_status=InstrumentStatus.INSTRUMENT_STATUS_ALL).instruments
-    return resolve_front_future(futures, prefix, now=datetime.now(timezone.utc), roll_days=roll_days)
+    now = datetime.now(timezone.utc)
+    return [resolve_front_future(futures, prefix, now=now, roll_days=roll_days) for prefix in prefixes]
 
 
 def open_futures_balance(positions: object, instrument_uid: str) -> int:

@@ -331,6 +331,8 @@ class SwingLiveRunner:
                         append_swing_trade_csv(
                             log_csv,
                             {
+                                "symbol": self.symbol,
+                                "exit_time_utc": datetime.now(timezone.utc).isoformat(),
                                 "entry_price": ep_snap,
                                 "exit_price": fill_px,
                                 "pnl_net_rub": net,
@@ -702,7 +704,7 @@ class SwingLiveRunner:
                         self.symbol,
                         self.candle_interval,
                     )
-                    time.sleep(self.poll_interval_sec)
+                    self._stop.wait(self.poll_interval_sec)
                     continue
 
                 df_work = df.reset_index()
@@ -726,14 +728,14 @@ class SwingLiveRunner:
                 if not self._signal_on_close_only and not self._use_retest:
                     sig = int(dfi.iloc[-1]["signal"])
                     self._poll_loop_legacy_intrabar(dfi, last_ts, sig, forming, pos_qty, flat, k_vol)
-                    time.sleep(self.poll_interval_sec)
+                    self._stop.wait(self.poll_interval_sec)
                     continue
 
                 with self._lock:
                     closed_ts = self._last_closed_bar_ts
 
                 if closed_ts is not None and last_ts <= closed_ts:
-                    time.sleep(self.poll_interval_sec)
+                    self._stop.wait(self.poll_interval_sec)
                     continue
 
                 limit_timeout = False
@@ -914,7 +916,7 @@ class SwingLiveRunner:
 
             except Exception:
                 self.logger.exception("[SWING] poll error")
-            time.sleep(self.poll_interval_sec)
+            self._stop.wait(self.poll_interval_sec)
 
     def _poll_loop_legacy_intrabar(
         self,

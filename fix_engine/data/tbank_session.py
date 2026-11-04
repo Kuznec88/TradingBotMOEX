@@ -21,10 +21,9 @@ def run_tbank_paper_session(
     logger: logging.Logger,
     failure_monitor: object | None,
     logging_runtime: StructuredLoggingRuntime,
-    instrument_id: str,
-    symbol: str,
+    instruments: dict[str, str],
     tbank_broker: object | None = None,
-    swing_runner: object | None = None,
+    swing_runners: list[object] | None = None,
 ) -> None:
     """Старт стрима котировок T-Bank и сопутствующих сервисов до завершения сессии."""
     from fix_engine.config.settings import (
@@ -61,8 +60,6 @@ def run_tbank_paper_session(
 
     tbank_host = read_str_merged(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
 
-    tbank_instrument_id = instrument_id
-    tbank_symbol = symbol
     tbank_depth = read_int_merged(base_dir, "TBankOrderBookDepth", 1)
     tbank_include_trades = read_bool_merged(base_dir, "TBankIncludeTrades", True)
     tbank_run_duration_sec = read_int_merged(base_dir, "TBankRunDurationSec", 0)
@@ -87,13 +84,14 @@ def run_tbank_paper_session(
             "PREFLIGHT: T-Invest token not loaded (settings.local.cfg: TBankSandboxToken=...)"
         )
 
-    verify_market_data_readonly(
-        token=tbank_token,
-        host=tbank_host,
-        instrument_id=tbank_instrument_id,
-        logger=logger,
-        bundle_dir=base_dir,
-    )
+    for instrument_uid in instruments:
+        verify_market_data_readonly(
+            token=tbank_token,
+            host=tbank_host,
+            instrument_id=instrument_uid,
+            logger=logger,
+            bundle_dir=base_dir,
+        )
     log_event(
         logger,
         level=logging.INFO,
@@ -121,19 +119,17 @@ def run_tbank_paper_session(
             start()
 
     logger.info(
-        "[TBANK] data_provider=%s host=%s instrument_id=%s symbol=%s run_duration_sec=%s",
+        "[TBANK] data_provider=%s host=%s symbols=%s run_duration_sec=%s",
         "TINKOFF",
         tbank_host,
-        tbank_instrument_id,
-        tbank_symbol,
+        ",".join(instruments.values()),
         tbank_run_duration_sec,
     )
     try:
         feed_kwargs = dict(
             token=tbank_token,
             host=tbank_host,
-            instrument_id=tbank_instrument_id,
-            symbol=tbank_symbol,
+            instruments=instruments,
             orderbook_depth=tbank_depth,
             include_trades=tbank_include_trades,
             on_raw_market_data=market_data_engine.update_market_data,
@@ -153,8 +149,8 @@ def run_tbank_paper_session(
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
-        if swing_runner is not None:
-            stop_swing = getattr(swing_runner, "stop", None)
+        for runner in swing_runners or []:
+            stop_swing = getattr(runner, "stop", None)
             if callable(stop_swing):
                 stop_swing()
         if tbank_broker is not None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -73,8 +75,7 @@ def run_tbank_sandbox_market_data(
     *,
     token: str,
     host: str,
-    instrument_id: str,
-    symbol: str,
+    instruments: Mapping[str, str],
     orderbook_depth: int,
     include_trades: bool,
     on_raw_market_data: Callable[[dict[str, object]], None],
@@ -108,8 +109,8 @@ def run_tbank_sandbox_market_data(
         raise RuntimeError(
             "TBank token is empty. Set TBankSandboxToken in settings.local.cfg."
         )
-    if not instrument_id.strip():
-        raise RuntimeError("TBank instrument id/figi is empty. Set TBankInstrumentId in settings.")
+    if not instruments:
+        raise RuntimeError("No instruments to subscribe to.")
 
     start_ts = time.monotonic()
     stop_after = int(run_duration_sec)
@@ -134,19 +135,19 @@ def run_tbank_sandbox_market_data(
 
     active_orderbook_depth = [max(1, int(orderbook_depth))]
 
-    def _mk_orderbook_instr() -> object:
+    def _mk_orderbook_instr(instrument_id: str) -> object:
         try:
             return OrderBookInstrument(instrument_id=instrument_id, depth=active_orderbook_depth[0])
         except TypeError:
             return OrderBookInstrument(figi=instrument_id, depth=active_orderbook_depth[0])
 
-    def _mk_last_price_instr() -> object:
+    def _mk_last_price_instr(instrument_id: str) -> object:
         try:
             return LastPriceInstrument(instrument_id=instrument_id)
         except TypeError:
             return LastPriceInstrument(figi=instrument_id)
 
-    def _mk_trade_instr() -> object:
+    def _mk_trade_instr(instrument_id: str) -> object:
         try:
             return TradeInstrument(instrument_id=instrument_id)
         except TypeError:
@@ -156,13 +157,13 @@ def run_tbank_sandbox_market_data(
         yield MarketDataRequest(
             subscribe_order_book_request=SubscribeOrderBookRequest(
                 subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
-                instruments=[_mk_orderbook_instr()],
+                instruments=[_mk_orderbook_instr(uid) for uid in instruments],
             )
         )
         yield MarketDataRequest(
             subscribe_last_price_request=SubscribeLastPriceRequest(
                 subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
-                instruments=[_mk_last_price_instr()],
+                instruments=[_mk_last_price_instr(uid) for uid in instruments],
             )
         )
         if include_trades:
@@ -170,7 +171,7 @@ def run_tbank_sandbox_market_data(
                 yield MarketDataRequest(
                     subscribe_trades_request=SubscribeTradesRequest(
                         subscription_action=SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE,
-                        instruments=[_mk_trade_instr()],
+                        instruments=[_mk_trade_instr(uid) for uid in instruments],
                     )
                 )
             except Exception:
@@ -187,11 +188,10 @@ def run_tbank_sandbox_market_data(
     seen_event_kinds: set[str] = set()
 
     logger.info(
-        "[TBANK][MD] connecting host=%s instrument_id=%s symbol=%s depth=%s include_trades=%s "
+        "[TBANK][MD] connecting host=%s symbols=%s depth=%s include_trades=%s "
         "reconnect_delay=%.1f..%.1fs stale_reconnect=%s",
         host,
-        instrument_id,
-        symbol,
+        ",".join(instruments.values()),
         max(1, int(orderbook_depth)),
         include_trades,
         reconnect_initial_delay_sec,
@@ -250,7 +250,7 @@ def run_tbank_sandbox_market_data(
                                 logger.warning(
                                     "[TBANK][MD] depth=%s is invalid for instrument=%s; fallback depth=1 and reconnect",
                                     prev_depth,
-                                    instrument_id,
+                                    getattr(sub, "instrument_uid", ""),
                                 )
                                 break
                         if need_reconnect_after_depth_fallback:
@@ -258,6 +258,9 @@ def run_tbank_sandbox_market_data(
 
                     orderbook = getattr(event, "orderbook", None) or getattr(event, "order_book", None)
                     if orderbook is not None:
+                        event_symbol = instruments.get(str(getattr(orderbook, "instrument_uid", "")))
+                        if event_symbol is None:
+                            continue
                         bids = getattr(orderbook, "bids", None)
                         asks = getattr(orderbook, "asks", None)
                         bid, bid_size_l1 = _first_level_price_and_size(bids)
@@ -272,7 +275,7 @@ def run_tbank_sandbox_market_data(
                             try:
                                 on_raw_market_data(
                                     {
-                                        "symbol": symbol.upper(),
+                                        "symbol": event_symbol,
                                         "bid": bid,
                                         "ask": ask,
                                         "last": (bid + ask) / 2.0,
@@ -294,12 +297,15 @@ def run_tbank_sandbox_market_data(
 
                     last_price = getattr(event, "last_price", None) or getattr(event, "lastprice", None)
                     if last_price is not None:
+                        event_symbol = instruments.get(str(getattr(last_price, "instrument_uid", "")))
+                        if event_symbol is None:
+                            continue
                         px = _quotation_to_float(getattr(last_price, "price", None))
                         if px > 0:
                             try:
                                 on_raw_market_data(
                                     {
-                                        "symbol": symbol.upper(),
+                                        "symbol": event_symbol,
                                         "bid": px,
                                         "ask": px,
                                         "last": px,

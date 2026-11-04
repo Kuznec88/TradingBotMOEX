@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,9 +15,10 @@ import pytest
 from fix_engine.config.swing_params import load_swing_params
 from fix_engine.data.instruments import open_futures_balance, resolve_front_future
 from fix_engine.execution.tbank_broker import TinkoffBrokerController
+from fix_engine.failure_monitor import FailureMonitor
 from fix_engine.order_models import MarketType
 from fix_engine.risk.manager import RiskManager
-from fix_engine.strategy.swing_breakout import RetestEntryIntent, SwingBreakoutParams
+from fix_engine.strategy.swing_breakout import RetestEntryIntent, SwingBreakoutParams, append_swing_trade_csv
 from fix_engine.strategy.swing_live_runner import SwingLiveRunner
 
 FE_DIR = Path(__file__).resolve().parents[1] / "fix_engine"
@@ -171,3 +174,41 @@ def test_settings_match_the_tested_candidate() -> None:
     assert params.commission_rate == 0.00025
     assert (params.htf_resample_rule, params.htf_secondary_resample_rule) == ("", "")
     assert params.max_trades_per_day == 5
+    assert params.max_entry_spread_ticks == 0
+
+
+def test_runner_ignores_other_instruments() -> None:
+    runner, gateway = _runner()
+    runner.on_market_data(SimpleNamespace(symbol="GZZ6", bid=1.0, ask=2.0))
+    runner.on_execution_report({"symbol": "GZZ6", "cl_ord_id": "X", "status_new": "FILLED", "last_qty": 1.0, "side": "2", "last_px": 1.0})
+    assert gateway.orders == []
+    assert runner._position_qty == 1.0
+
+
+def test_broker_prices_use_the_tick_of_the_contract() -> None:
+    assert str(TinkoffBrokerController._round_price_to_tick(Decimal("243987"), 25.0)) == "243975.0"
+    assert str(TinkoffBrokerController._round_price_to_tick(Decimal("30000.4"), 1.0)) == "30000.0"
+
+
+def test_failure_monitor_watches_every_instrument() -> None:
+    monitor = FailureMonitor(
+        logger=logging.getLogger("test"),
+        order_manager=SimpleNamespace(),
+        gateway=SimpleNamespace(),
+        watch_symbols=["SRZ6", "GZZ6"],
+        max_market_data_staleness_sec=60,
+        max_order_stuck_sec=30,
+        max_no_execution_report_sec=15,
+    )
+    monitor.on_market_data(SimpleNamespace(symbol="MXZ6"))
+    assert monitor._last_md_ts is None
+    monitor.on_market_data(SimpleNamespace(symbol="GZZ6"))
+    assert monitor._last_md_ts is not None
+
+
+def test_trade_log_survives_concurrent_writers(tmp_path) -> None:
+    path = tmp_path / "trades.csv"
+    rows = [{"symbol": f"S{i}", "pnl": i} for i in range(40)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda row: append_swing_trade_csv(path, row), rows))
+    assert len(pd.read_csv(path)) == 40

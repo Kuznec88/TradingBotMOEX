@@ -30,25 +30,23 @@ class TinkoffBrokerController:
         *,
         token: str,
         host: str,
-        instrument_id: str,
-        symbol: str,
+        contracts: dict[str, tuple[str, float]],
         order_manager: OrderManager,
         logger: logging.Logger,
         on_execution_report: Callable[[object, str], None],
         shares_per_lot: int = 1,
-        tick_size: float = 0.01,
         use_sandbox_orders: bool = False,
         account_ids_for_stream: list[str] | None = None,
     ) -> None:
         self._token = token.strip()
         self._host = host.strip()
-        self._instrument_id = instrument_id.strip()
-        self._symbol = symbol.upper().strip()
+        # Тикер -> (uid инструмента, шаг цены)
+        self._contracts = {sym.upper(): contract for sym, contract in contracts.items()}
+        self._uid_to_symbol = {uid: sym for sym, (uid, _) in self._contracts.items()}
         self._order_manager = order_manager
         self._logger = logger
         self._on_execution_report = on_execution_report
         self._shares_per_lot = max(1, int(shares_per_lot))
-        self._tick_size = float(tick_size) if float(tick_size) > 0 else 0.01
         self._use_sandbox_orders = bool(use_sandbox_orders)
 
         self._unary_lock = threading.Lock()
@@ -181,9 +179,10 @@ class TinkoffBrokerController:
         )
         cl_ord_id = order.cl_ord_id
 
+        instrument_id, tick_size = self._contracts[symbol.upper()]
         lots = self._qty_to_lots(qty)
         direction = OrderDirection.ORDER_DIRECTION_BUY if str(side).strip() in {"1", "BUY", "B"} else OrderDirection.ORDER_DIRECTION_SELL
-        px = self._round_price_to_tick(Decimal(str(float(price))))
+        px = self._round_price_to_tick(Decimal(str(float(price))), tick_size)
         quotation = decimal_to_quotation(px)
         # T-Invest requires order_id to be UUID (or empty). We keep our internal cl_ord_id
         # and use a UUID as request id to correlate stream updates.
@@ -195,7 +194,7 @@ class TinkoffBrokerController:
                     if self._use_sandbox_orders:
                         resp = client.sandbox.post_sandbox_order(
                             account_id=account_id,
-                            instrument_id=self._instrument_id,
+                            instrument_id=instrument_id,
                             quantity=lots,
                             price=quotation,
                             direction=direction,
@@ -205,7 +204,7 @@ class TinkoffBrokerController:
                     else:
                         resp = client.orders.post_order(
                             account_id=account_id,
-                            instrument_id=self._instrument_id,
+                            instrument_id=instrument_id,
                             quantity=lots,
                             price=quotation,
                             direction=direction,
@@ -291,8 +290,9 @@ class TinkoffBrokerController:
             raise ValueError(f"Количество должно быть целым числом лотов: qty={qty} lot={self._shares_per_lot}")
         return lots
 
-    def _round_price_to_tick(self, price: Decimal) -> Decimal:
-        tick = Decimal(str(self._tick_size))
+    @staticmethod
+    def _round_price_to_tick(price: Decimal, tick_size: float) -> Decimal:
+        tick = Decimal(str(tick_size))
         if tick <= 0:
             return price
         # round to nearest tick
@@ -359,7 +359,7 @@ class TinkoffBrokerController:
         if order is None:
             return
 
-        sym = str(getattr(st, "ticker", "") or self._symbol).upper()
+        sym = str(getattr(st, "ticker", "") or self._uid_to_symbol.get(str(getattr(st, "instrument_uid", "")), "")).upper()
         st_code = self._exec_report_status_to_int(getattr(st, "execution_report_status", None))
         lot_sz = int(getattr(st, "lot_size", 0) or 0) or self._shares_per_lot
         lots_exec = int(getattr(st, "lots_executed", 0) or 0)
@@ -533,15 +533,13 @@ def make_tinkoff_engines_for_runtime(
     *,
     token: str,
     host: str,
-    instrument_id: str,
-    symbol: str,
+    contracts: dict[str, tuple[str, float]],
     order_manager: OrderManager,
     logger: logging.Logger,
     on_execution_report: Callable[[object, str], None],
     trading_account_equities: str,
     trading_account_forts: str,
     shares_per_lot: int,
-    tick_size: float,
     use_sandbox_orders: bool,
 ) -> tuple[TinkoffLiveEngine, TinkoffLiveEngine, TinkoffBrokerController]:
     eq = str(trading_account_equities).strip()
@@ -550,13 +548,11 @@ def make_tinkoff_engines_for_runtime(
     ctrl = TinkoffBrokerController(
         token=token,
         host=host,
-        instrument_id=instrument_id,
-        symbol=symbol,
+        contracts=contracts,
         order_manager=order_manager,
         logger=logger,
         on_execution_report=on_execution_report,
         shares_per_lot=shares_per_lot,
-        tick_size=tick_size,
         use_sandbox_orders=use_sandbox_orders,
         account_ids_for_stream=accounts,
     )

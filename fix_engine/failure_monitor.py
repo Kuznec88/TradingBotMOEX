@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from fix_engine.data.models import MarketData
@@ -24,7 +25,7 @@ class FailureMonitor:
         logger: logging.Logger,
         order_manager: OrderManager,
         gateway: ExecutionGateway,
-        watch_symbol: str,
+        watch_symbols: Iterable[str],
         max_market_data_staleness_sec: int,
         max_order_stuck_sec: int,
         max_no_execution_report_sec: int,
@@ -34,7 +35,7 @@ class FailureMonitor:
         self.logger = logger
         self.order_manager = order_manager
         self.gateway = gateway
-        self.watch_symbol = watch_symbol.upper()
+        self.watch_symbols = {symbol.upper() for symbol in watch_symbols}
         self.max_market_data_staleness_sec = max(1, int(max_market_data_staleness_sec))
         self.max_order_stuck_sec = max(1, int(max_order_stuck_sec))
         self.max_no_execution_report_sec = max(1, int(max_no_execution_report_sec))
@@ -82,7 +83,7 @@ class FailureMonitor:
         )
 
     def on_market_data(self, data: MarketData) -> None:
-        if data.symbol.upper() != self.watch_symbol:
+        if data.symbol.upper() not in self.watch_symbols:
             return
         with self._lock:
             self._last_md_ts = datetime.now(timezone.utc)
@@ -113,7 +114,7 @@ class FailureMonitor:
             if md_age > self.max_market_data_staleness_sec:
                 self._emit_anomaly(
                     "stale_market_data",
-                    f"symbol={self.watch_symbol} age_sec={md_age:.1f} limit={self.max_market_data_staleness_sec}",
+                    f"age_sec={md_age:.1f} limit={self.max_market_data_staleness_sec}",
                 )
 
         if open_orders:

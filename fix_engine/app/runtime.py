@@ -14,7 +14,7 @@ from fix_engine.config.settings import (
     read_str_merged as _read_str,
 )
 from fix_engine.config.swing_params import load_swing_params
-from fix_engine.data.instruments import assert_no_open_position, fetch_front_future
+from fix_engine.data.instruments import assert_no_open_position, fetch_front_futures
 from fix_engine.data.preflight import load_sandbox_token
 from fix_engine.data.engine import MarketDataEngine
 from fix_engine.execution.gateway import ExecutionGateway
@@ -96,22 +96,24 @@ def _run_locked(
     _ = _lock_fh  # удерживается живым до finally в run()
 
     data_provider = _read_str(base_dir, "DataProvider", "TINKOFF").upper()
-    futures_prefix = _read_str(base_dir, "TBankFuturesPrefix", "").strip()
-    if not futures_prefix:
-        raise RuntimeError("TBankFuturesPrefix is required (for example SR)")
-    contract = fetch_front_future(
+    futures_prefixes = [x.strip() for x in _read_str(base_dir, "TBankFuturesPrefixes", "").split(",") if x.strip()]
+    if not futures_prefixes:
+        raise RuntimeError("TBankFuturesPrefixes is required (for example SR,GZ)")
+    contracts = fetch_front_futures(
         token=str(load_sandbox_token(base_dir) or "").strip(),
         host=_read_str(base_dir, "TBankSandboxHost", ""),
-        prefix=futures_prefix,
+        prefixes=futures_prefixes,
         roll_days=_read_int(base_dir, "TBankFuturesRollDays", 7),
     )
-    logger.info(
-        "[PREFLIGHT] contract=%s uid=%s tick=%s no_entries_after=%s",
-        contract.ticker,
-        contract.uid,
-        contract.tick,
-        contract.no_entries_after.isoformat(),
-    )
+    for contract in contracts:
+        logger.info(
+            "[PREFLIGHT] contract=%s uid=%s tick=%s tick_rub=%s no_entries_after=%s",
+            contract.ticker,
+            contract.uid,
+            contract.tick,
+            contract.tick_rub,
+            contract.no_entries_after.isoformat(),
+        )
     order_manager = OrderManager()
     market_data_engine = MarketDataEngine(logger=logger)
 
@@ -150,14 +152,14 @@ def _run_locked(
     )
 
     failure_monitor: FailureMonitor | None = None
-    swing_runner: SwingLiveRunner | None = None
+    swing_runners: list[SwingLiveRunner] = []
 
     def on_execution_report(message: object, source: str) -> None:
         if failure_monitor is not None:
             failure_monitor.on_execution_report()
         state = order_manager.on_execution_report(message)
-        if swing_runner is not None:
-            swing_runner.on_execution_report(state)
+        for runner in swing_runners:
+            runner.on_execution_report(state)
         _ = source  # reserved for future per-source handling
 
     tbank_broker = None
@@ -178,9 +180,6 @@ def _run_locked(
                 "ExecutionMode=LIVE requires TBankSandboxToken in settings.local.cfg."
             )
         host = _read_str(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
-        inst = contract.uid
-        sym = contract.ticker
-        tick_size = contract.tick
         shares_per_lot = _read_int(base_dir, "TBankSharesPerLot", 1)
         use_sandbox_orders = _read_bool(base_dir, "TBankUseSandboxOrders", False)
         if not use_sandbox_orders:
@@ -198,32 +197,30 @@ def _run_locked(
                 account_fo = account_eq
         elif not account_eq:
             raise RuntimeError("ExecutionMode=LIVE requires TradingAccountEquities (Tinkoff account id).")
-        assert_no_open_position(
-            token=str(tok).strip(),
-            host=host,
-            account_id=account_fo or account_eq,
-            instrument_uid=inst,
-            use_sandbox=use_sandbox_orders,
-        )
+        for contract in contracts:
+            assert_no_open_position(
+                token=str(tok).strip(),
+                host=host,
+                account_id=account_fo or account_eq,
+                instrument_uid=contract.uid,
+                use_sandbox=use_sandbox_orders,
+            )
         equities_engine, forts_engine, tbank_broker = make_tinkoff_engines_for_runtime(
             token=str(tok).strip(),
             host=host,
-            instrument_id=inst,
-            symbol=sym,
+            contracts={c.ticker: (c.uid, c.tick) for c in contracts},
             order_manager=order_manager,
             logger=logger,
             on_execution_report=on_execution_report,
             trading_account_equities=account_eq,
             trading_account_forts=account_fo,
             shares_per_lot=shares_per_lot,
-            tick_size=tick_size,
             use_sandbox_orders=use_sandbox_orders,
         )
         logger.info(
-            "[PREFLIGHT] LIVE Tinkoff orders: host=%s instrument_id=%s symbol=%s TBankSharesPerLot=%s sandbox_orders=%s",
+            "[PREFLIGHT] LIVE Tinkoff orders: host=%s symbols=%s TBankSharesPerLot=%s sandbox_orders=%s",
             host,
-            inst,
-            sym,
+            ",".join(c.ticker for c in contracts),
             shares_per_lot,
             use_sandbox_orders,
         )
@@ -266,19 +263,17 @@ def _run_locked(
     if quote_store is not None:
         market_data_engine.subscribe(quote_store.on_market_data)
     market_data_engine.subscribe(gateway.on_market_data)
-    symbol = contract.ticker
     lot_value = _read_default_optional_setting(base_dir, "lot_size")
     lot_size = float(lot_value) if lot_value else _read_float(base_dir, "MarketMakingLotSize", 1.0)
     market_raw = (_read_default_optional_setting(base_dir, "market") or _read_str(base_dir, "MarketMakingMarket", "EQUITIES")).upper()
     market = MarketType(market_raw) if market_raw in {"EQUITIES", "FORTS"} else MarketType.EQUITIES
-    tick_size = contract.tick
 
     if failure_handling_enabled:
         failure_monitor = FailureMonitor(
             logger=logger,
             order_manager=order_manager,
             gateway=gateway,
-            watch_symbol=symbol,
+            watch_symbols=[c.ticker for c in contracts],
             max_market_data_staleness_sec=_read_int(base_dir, "MaxMarketDataStalenessSec", 60),
             max_order_stuck_sec=_read_int(base_dir, "MaxOrderStuckSec", 30),
             max_no_execution_report_sec=_read_int(base_dir, "MaxNoExecutionReportSec", 15),
@@ -294,42 +289,44 @@ def _run_locked(
         raise RuntimeError(
             "TradingStrategy=SWING_BREAKOUT requires TBankSandboxToken in settings.local.cfg."
         )
-    inst = contract.uid
     host = _read_str(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
     swing_interval = _read_str(base_dir, "SwingCandleInterval", "1h").strip().lower()
     if swing_interval not in {"1h", "4h"}:
         raise RuntimeError(f"SwingCandleInterval must be 1h or 4h, got {swing_interval!r}")
 
-    rub_per_point = contract.tick_rub / contract.tick
-    swing_params = load_swing_params(base_dir, tick_size=tick_size)
-    # Путь журнала сделок считается от fix_engine, а не от каталога запуска.
-    trades_log = swing_params.trades_log_csv_path and str(base_dir / swing_params.trades_log_csv_path)
-    swing_params = replace(swing_params, rub_per_point=rub_per_point, notional_scale=rub_per_point, trades_log_csv_path=trades_log)
-    swing_runner = SwingLiveRunner(
-        base_dir=base_dir,
-        gateway=gateway,
-        logger=logger,
-        symbol=symbol,
-        market=market,
-        lot_size=lot_size,
-        tick_size=tick_size,
-        params=swing_params,
-        candle_interval=swing_interval,
-        poll_interval_sec=_read_float(base_dir, "SwingPollIntervalSec", 30.0),
-        get_latest=market_data_engine.get_latest,
-        instrument_id=inst,
-        token=tok,
-        host=host.strip(),
-        on_trade_closed=risk_manager.on_trade_result,
-        no_entries_after=contract.no_entries_after,
-    )
-    swing_runner.start()
-    market_data_engine.subscribe(swing_runner.on_market_data)
+    poll_interval_sec = _read_float(base_dir, "SwingPollIntervalSec", 30.0)
+    for contract in contracts:
+        rub_per_point = contract.tick_rub / contract.tick
+        swing_params = load_swing_params(base_dir, tick_size=contract.tick)
+        # Путь журнала сделок считается от fix_engine, а не от каталога запуска.
+        trades_log = swing_params.trades_log_csv_path and str(base_dir / swing_params.trades_log_csv_path)
+        swing_params = replace(swing_params, rub_per_point=rub_per_point, notional_scale=rub_per_point, trades_log_csv_path=trades_log)
+        runner = SwingLiveRunner(
+            base_dir=base_dir,
+            gateway=gateway,
+            logger=logger,
+            symbol=contract.ticker,
+            market=market,
+            lot_size=lot_size,
+            tick_size=contract.tick,
+            params=swing_params,
+            candle_interval=swing_interval,
+            poll_interval_sec=poll_interval_sec,
+            get_latest=market_data_engine.get_latest,
+            instrument_id=contract.uid,
+            token=tok,
+            host=host.strip(),
+            on_trade_closed=risk_manager.on_trade_result,
+            no_entries_after=contract.no_entries_after,
+        )
+        swing_runners.append(runner)
+        market_data_engine.subscribe(runner.on_market_data)
+        runner.start()
     logger.info(
-        "[RUNTIME] TradingStrategy=SWING_BREAKOUT interval=%s poll=%.1fs symbol=%s",
+        "[RUNTIME] interval=%s poll=%.1fs symbols=%s",
         swing_interval,
-        _read_float(base_dir, "SwingPollIntervalSec", 30.0),
-        symbol,
+        poll_interval_sec,
+        ",".join(c.ticker for c in contracts),
     )
 
     if data_provider in {"TINKOFF", "TINKOFF_SANDBOX"}:
@@ -343,10 +340,9 @@ def _run_locked(
             logger=logger,
             failure_monitor=failure_monitor,
             logging_runtime=logging_runtime,
-            instrument_id=contract.uid,
-            symbol=contract.ticker,
+            instruments={c.uid: c.ticker for c in contracts},
             tbank_broker=tbank_broker,
-            swing_runner=swing_runner,
+            swing_runners=swing_runners,
         )
         return
 
