@@ -55,6 +55,8 @@ class SwingBreakoutParams:
 
     # --- Retest FSM + структурный риск (основной режим) ---
     use_retest_fsm: bool = True
+    # Какой вход использует живой бот: ретест или пробой с объёмом.
+    entry_mode: Literal["retest", "volume_breakout"] = "retest"
     # False: входы только из extra_intent_fn, FSM ретеста не работает (только бэктест).
     retest_fsm_enabled: bool = True
     atr_period: int = 14

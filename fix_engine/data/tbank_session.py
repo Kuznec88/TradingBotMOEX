@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,8 @@ def run_tbank_paper_session(
     logger: logging.Logger,
     failure_monitor: object | None,
     logging_runtime: StructuredLoggingRuntime,
+    instrument_id: str,
+    symbol: str,
     tbank_broker: object | None = None,
     swing_runner: object | None = None,
 ) -> None:
@@ -58,8 +61,8 @@ def run_tbank_paper_session(
 
     tbank_host = read_str_merged(base_dir, "TBankSandboxHost", TBANK_INVEST_GRPC_HOST_PROD)
 
-    tbank_instrument_id = read_str_merged(base_dir, "TBankInstrumentId", "")
-    tbank_symbol = read_str_merged(base_dir, "TBankSymbol", "SBER")
+    tbank_instrument_id = instrument_id
+    tbank_symbol = symbol
     tbank_depth = read_int_merged(base_dir, "TBankOrderBookDepth", 1)
     tbank_include_trades = read_bool_merged(base_dir, "TBankIncludeTrades", True)
     tbank_run_duration_sec = read_int_merged(base_dir, "TBankRunDurationSec", 0)
@@ -126,7 +129,7 @@ def run_tbank_paper_session(
         tbank_run_duration_sec,
     )
     try:
-        run_tbank_sandbox_market_data(
+        feed_kwargs = dict(
             token=tbank_token,
             host=tbank_host,
             instrument_id=tbank_instrument_id,
@@ -140,6 +143,13 @@ def run_tbank_paper_session(
             reconnect_max_delay_sec=tbank_md_reconnect_max_sec,
             stale_reconnect_sec=tbank_md_stale_reconnect_sec,
         )
+        if tbank_run_duration_sec > 0:
+            # Поток котировок может молчать и не дойти до проверки времени, поэтому срок держит основной поток.
+            feed = threading.Thread(target=run_tbank_sandbox_market_data, kwargs=feed_kwargs, name="tbank-md", daemon=True)
+            feed.start()
+            feed.join(timeout=float(tbank_run_duration_sec))
+        else:
+            run_tbank_sandbox_market_data(**feed_kwargs)
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:

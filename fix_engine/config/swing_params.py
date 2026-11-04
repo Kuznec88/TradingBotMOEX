@@ -11,16 +11,18 @@ from fix_engine.config.settings import (
     read_str_merged,
 )
 from fix_engine.strategy.swing_breakout import SwingBreakoutParams
+from fix_engine.tools.common_cfg_dir import find_cfg_value_from_dir
 
 _READERS = {
     "int": read_int_merged,
     "float": read_float_merged,
     "bool": read_bool_merged,
-    "str": read_str_merged,
 }
 
 # Поле SwingBreakoutParams -> (тип, ключ в settings.cfg)
 SWING_SETTING_KEYS: dict[str, tuple[str, str]] = {
+    "entry_mode": ("str", "SwingEntryMode"),
+    "htf_secondary_resample_rule": ("str", "SwingHtfSecondaryResampleRule"),
     "n_levels": ("int", "SwingNLevels"),
     "k_volume": ("float", "SwingKVolume"),
     "ma_period": ("int", "SwingMAPeriod"),
@@ -97,8 +99,12 @@ def load_swing_params(cfg_dir: Path, *, tick_size: float) -> SwingBreakoutParams
     defaults = SwingBreakoutParams()
     values: dict[str, object] = {}
     for field, (kind, key) in SWING_SETTING_KEYS.items():
-        value = _READERS[kind](cfg_dir, key, getattr(defaults, field))
-        values[field] = value.strip() if isinstance(value, str) else value
+        if kind == "str":
+            # Пустое значение в настройках значимо: например, старший таймфрейм выключен.
+            value = find_cfg_value_from_dir(cfg_dir, key)
+            values[field] = getattr(defaults, field) if value is None else value.strip()
+        else:
+            values[field] = _READERS[kind](cfg_dir, key, getattr(defaults, field))
     remainder = read_str_merged(cfg_dir, "SwingPartialRemainderMode", "trail").strip().lower()
     values["partial_remainder_mode"] = "tp" if remainder == "tp" else "trail"
     return SwingBreakoutParams(tick_size=tick_size, **values)

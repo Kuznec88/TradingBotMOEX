@@ -47,7 +47,7 @@ class FailureMonitor:
         self._last_md_ts: datetime | None = None
         self._last_exec_report_ts: datetime | None = None
         self._last_alert_at: dict[str, float] = {}
-        self._alert_cooldown_sec = 5.0
+        self._alert_cooldown_sec = 60.0
 
     def start(self) -> None:
         with self._lock:

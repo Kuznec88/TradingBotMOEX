@@ -286,7 +286,10 @@ class TinkoffBrokerController:
     def _qty_to_lots(self, qty: float) -> int:
         raw = float(qty) / float(self._shares_per_lot)
         lots = int(round(raw))
-        return max(1, lots)
+        # Округление дробного количества закрыло бы всю позицию вместо её части.
+        if lots < 1 or abs(raw - lots) > 1e-9:
+            raise ValueError(f"Количество должно быть целым числом лотов: qty={qty} lot={self._shares_per_lot}")
+        return lots
 
     def _round_price_to_tick(self, price: Decimal) -> Decimal:
         tick = Decimal(str(self._tick_size))

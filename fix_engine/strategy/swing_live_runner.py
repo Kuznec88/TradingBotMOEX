@@ -17,6 +17,7 @@ import pandas as pd
 
 from fix_engine.data.models import MarketData
 from fix_engine.order_models import MarketType, OrderRequest
+from fix_engine.strategy.volume_breakout import volume_breakout_extra_intent
 from fix_engine.strategy.swing_breakout import (
     RetestEntryIntent,
     SwingBreakoutParams,
@@ -67,6 +68,8 @@ class SwingLiveRunner:
         instrument_id: str,
         token: str,
         host: str,
+        on_trade_closed: Callable[[float], None] | None = None,
+        no_entries_after: datetime | None = None,
     ) -> None:
         self._base_dir = base_dir
         self.gateway = gateway
@@ -109,6 +112,8 @@ class SwingLiveRunner:
             if params.trailing_gap_rub > 0
             else 0.0
         )
+        self._on_trade_closed = on_trade_closed
+        self._no_entries_after = no_entries_after
         self._best_extreme_price: float = 0.0
         self._trail_stop_level: float | None = None
 
@@ -186,8 +191,9 @@ class SwingLiveRunner:
                 and p.partial_exit_r_multiple > 0
             ):
                 rmul = p.partial_exit_r_multiple
-                part_qty = qty * p.partial_exit_fraction
-                if part_qty > 1e-9:
+                # Только целые контракты, и что-то должно остаться в позиции.
+                part_qty = float(math.floor(abs(qty) * p.partial_exit_fraction))
+                if part_qty >= 1.0 and abs(qty) - part_qty >= 1.0:
                     if side_long and bid >= entry + rmul * self._struct_risk:
                         self.logger.info(
                             "[SWING][EXIT] reason=partial_tp symbol=%s qty=%.6f bid=%.4f",
@@ -208,33 +214,16 @@ class SwingLiveRunner:
             hit_sl = False
             hit_tp = False
             if partial_qty_out is None and self._use_retest and self._struct_risk > 0:
+                # Уровень трейлинга двигается только на закрытии бара, как в бэктесте.
+                trail = self._trail_stop_level
                 if side_long:
-                    self._best_extreme_price = max(self._best_extreme_price, bid) if self._best_extreme_price > 0 else bid
-                    sl_level = float(self._struct_sl)
+                    sl_level = float(self._struct_sl) if trail is None else max(float(self._struct_sl), trail)
                     tp_level = float(self._struct_tp)
-                    if self._struct_trail_arm > 0 and self._struct_trail_gap > 0:
-                        if (self._best_extreme_price - entry) >= self._struct_trail_arm:
-                            cand = self._best_extreme_price - self._struct_trail_gap
-                            self._trail_stop_level = (
-                                cand if self._trail_stop_level is None else max(self._trail_stop_level, cand)
-                            )
-                            sl_level = max(sl_level, self._trail_stop_level)
                     hit_sl = bid <= sl_level
                     hit_tp = bid >= tp_level
                 else:
-                    if self._best_extreme_price <= 0:
-                        self._best_extreme_price = ask
-                    else:
-                        self._best_extreme_price = min(self._best_extreme_price, ask)
-                    sl_level = float(self._struct_sl)
+                    sl_level = float(self._struct_sl) if trail is None else min(float(self._struct_sl), trail)
                     tp_level = float(self._struct_tp)
-                    if self._struct_trail_arm > 0 and self._struct_trail_gap > 0:
-                        if (entry - self._best_extreme_price) >= self._struct_trail_arm:
-                            cand = self._best_extreme_price + self._struct_trail_gap
-                            self._trail_stop_level = (
-                                cand if self._trail_stop_level is None else min(self._trail_stop_level, cand)
-                            )
-                            sl_level = min(sl_level, self._trail_stop_level)
                     hit_sl = ask >= sl_level
                     hit_tp = ask <= tp_level
             elif partial_qty_out is None:
@@ -333,6 +322,8 @@ class SwingLiveRunner:
                     net = gross - fees
                     fg = abs(gross) if abs(gross) > 1e-12 else 1e-12
                     self._trade_governor.on_closed_trade_pnl(net, is_partial=False)
+                    if self._on_trade_closed is not None:
+                        self._on_trade_closed(net)
                     log_csv = (p.trades_log_csv_path or "").strip()
                     if log_csv and self._open_entry_meta is not None:
                         om = dict(self._open_entry_meta)
@@ -393,13 +384,15 @@ class SwingLiveRunner:
                     )
                     net = gross - fees
                     self._trade_governor.on_closed_trade_pnl(net, is_partial=True)
+                    if self._on_trade_closed is not None:
+                        self._on_trade_closed(net)
                 self._partial_exit_done = True
                 if self.params.partial_remainder_mode == "tp":
                     self._struct_trail_arm = 0.0
                     self._struct_trail_gap = 0.0
             elif abs(prev) < 1e-12 and abs(self._position_qty) > 1e-12 and fill_px > 0:
                 self._entry_price = fill_px
-                self._best_extreme_price = 0.0
+                self._best_extreme_price = fill_px
                 self._trail_stop_level = None
                 self._partial_exit_done = False
                 self._bars_in_position = 0
@@ -437,6 +430,35 @@ class SwingLiveRunner:
             if cl_ord_id and cl_ord_id == self._exit_cl_ord_id and status_new == "FILLED":
                 self._exit_in_flight = False
                 self._exit_cl_ord_id = ""
+
+    def _update_trail_from_closed_bar(self, row: pd.Series) -> None:
+        with self._lock:
+            qty = float(self._position_qty)
+            if abs(qty) < 1e-12 or self._struct_trail_arm <= 0 or self._struct_trail_gap <= 0:
+                return
+            entry = float(self._entry_price)
+            if qty > 0:
+                self._best_extreme_price = max(self._best_extreme_price, float(row["high"]))
+                if self._best_extreme_price - entry >= self._struct_trail_arm:
+                    cand = self._best_extreme_price - self._struct_trail_gap
+                    self._trail_stop_level = cand if self._trail_stop_level is None else max(self._trail_stop_level, cand)
+            else:
+                self._best_extreme_price = min(self._best_extreme_price, float(row["low"]))
+                if entry - self._best_extreme_price >= self._struct_trail_arm:
+                    cand = self._best_extreme_price + self._struct_trail_gap
+                    self._trail_stop_level = cand if self._trail_stop_level is None else min(self._trail_stop_level, cand)
+
+    def _can_open_on_bar(self, bar_time: pd.Timestamp, now: datetime) -> bool:
+        """Сигнал только со свежезакрытого бара и только пока контракт не пора менять."""
+        if self._no_entries_after is not None and now >= self._no_entries_after:
+            self.logger.warning(
+                "[SWING][ENTRY_BLOCKED] reason=contract_near_expiry symbol=%s no_entries_after=%s",
+                self.symbol,
+                self._no_entries_after.isoformat(),
+            )
+            return False
+        interval = pd.Timedelta(self.candle_interval)
+        return now - (bar_time + interval).to_pydatetime() < interval.to_pytimedelta()
 
     def _try_post_entry_time_stop(self, last_row: pd.Series) -> None:
         p = self.params
@@ -718,17 +740,17 @@ class SwingLiveRunner:
                 with self._lock:
                     if self._use_retest and flat and self._pending_limit_cl_ord_id:
                         pit = self._pending_intent
-                        skip_to = pit is not None and bool(getattr(pit, "use_market_entry", False))
-                        if not skip_to:
-                            snap = self._pending_bar_snap_ts
-                            if snap is None:
-                                self._pending_bar_snap_ts = pd.Timestamp(last_ts)
-                            elif pd.Timestamp(last_ts) > snap:
-                                self._pending_bars_waited += 1
-                                self._pending_bar_snap_ts = pd.Timestamp(last_ts)
-                            to_bars = max(1, int(self.params.limit_order_timeout_bars))
-                            if self._pending_bars_waited >= to_bars:
-                                limit_timeout = True
+                        snap = self._pending_bar_snap_ts
+                        if snap is None:
+                            self._pending_bar_snap_ts = pd.Timestamp(last_ts)
+                        elif pd.Timestamp(last_ts) > snap:
+                            self._pending_bars_waited += 1
+                            self._pending_bar_snap_ts = pd.Timestamp(last_ts)
+                        # Заявка «по рынку» — лимитка по лучшей цене: без исполнения за бар она устарела.
+                        is_market = pit is not None and bool(getattr(pit, "use_market_entry", False))
+                        to_bars = 1 if is_market else max(1, int(self.params.limit_order_timeout_bars))
+                        if self._pending_bars_waited >= to_bars:
+                            limit_timeout = True
                     self._last_closed_bar_ts = pd.Timestamp(last_ts)
                 if limit_timeout:
                     self._clear_pending_entry("limit_timeout")
@@ -751,14 +773,35 @@ class SwingLiveRunner:
                             if den > 1e-9:
                                 self._best_tp_progress = max(self._best_tp_progress, (ep - lo_b) / den)
                 if self._use_retest:
+                    self._update_trail_from_closed_bar(last_row)
                     self._try_post_entry_time_stop(last_row)
 
                 if self._use_retest:
                     with self._lock:
                         can_fsm = flat and (not self._pending_limit_cl_ord_id)
+                    if can_fsm and not self._can_open_on_bar(pd.Timestamp(last_ts), datetime.now(timezone.utc)):
+                        can_fsm = False
                     intent: RetestEntryIntent | None = None
                     log_events: list[str] = []
-                    if can_fsm:
+                    if can_fsm and self.params.entry_mode == "volume_breakout":
+                        intent = volume_breakout_extra_intent(
+                            row=last_row,
+                            params=self.params,
+                            governor=self._trade_governor,
+                            bar_time=pd.Timestamp(last_ts),
+                        )
+                        self.logger.info(
+                            "[SWING][BAR] ts=%s close=%.4f high_n=%.4f low_n=%.4f volume=%.0f avg_volume=%.0f signal=%s symbol=%s",
+                            pd.Timestamp(last_ts).isoformat(),
+                            float(last_row["close"]),
+                            float(last_row["high_N"]),
+                            float(last_row["low_N"]),
+                            float(last_row["volume"]),
+                            float(last_row["avg_volume"]),
+                            intent.side if intent is not None else 0,
+                            self.symbol,
+                        )
+                    elif can_fsm:
                         new_state, intent, log_events = retest_fsm_step(
                             self._fsm_state,
                             row=last_row,

@@ -58,7 +58,7 @@ COST_FIELDS = [
 ]
 ALL_FIELDS = ENTRY_FIELDS + EXIT_FIELDS + COST_FIELDS
 PRESETS: dict[str, dict[str, Any]] = {
-    "Настройки бота": {"htf_mode": "hard"},
+    "Настройки бота": {"htf_mode": "off"},
     "Без старшего таймфрейма": {"htf_mode": "off"},
     "Мягкий фильтр, без всплеска объёма": {"htf_mode": "soft", "volume_spike_required": False},
 }
@@ -337,7 +337,7 @@ def main() -> None:
         st.button("Применить заготовку", on_click=apply_preset, args=(preset,), width="stretch")
 
         st.header("Входы")
-        entry_mode = st.selectbox("Тип входа", list(ENTRY_LABELS), format_func=lambda m: ENTRY_LABELS[m], help="Для входа «Объём + пробой» важны только всплеск объёма и лимит сделок в день.")
+        entry_mode = st.selectbox("Тип входа", list(ENTRY_LABELS), index=1, format_func=lambda m: ENTRY_LABELS[m], help="Для входа «Объём + пробой» важны только всплеск объёма и лимит сделок в день.")
         st.selectbox("Старший таймфрейм", list(HTF_LABELS), format_func=lambda m: HTF_LABELS[m], key="htf_mode")
         st.toggle("Требовать всплеск объёма", key="volume_spike_required")
         st.toggle("Рынком при сильном пробое", key="use_market_on_strong_breakout")
